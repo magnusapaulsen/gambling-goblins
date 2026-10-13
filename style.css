@@ -320,6 +320,9 @@ body {
 .card.attack .typeline{background:var(--boss);color:#000} .card.block .typeline{background:var(--block);color:#fff}
 .card.loot .typeline{background:var(--gold);color:#000} .card.skill .typeline{background:var(--skill);color:#000}
 .card .typeline .stat{font-size:.7rem;letter-spacing:0}
+/* Combo-aware preview: when the type-line number includes a combo multiplier, it gets
+   a black chip so the boost reads on every type colour (yellow-on-yellow would not). */
+.card .typeline .stat.boosted{background:#000;color:#fff;padding:0 5px}
 /* line-height 1.15 (not 1.28) reserves the vertical clearance the hotkey badge (bottom-left)
    needs against the longest 4-line descriptions -- .desc sizes to its own content rather
    than stretching to fill the card (flex:1 has nothing to distribute here), so the only way

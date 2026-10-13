@@ -103,54 +103,55 @@ function part(w, h, draw) {
 // strokes that read as scratches; and the splayed legs left a hole in the middle.
 // Fixed by giving it a real neck, solid horns, and legs close enough to read as a pair.
 function caveTroll() {
-  const head = part(26, 22, c => {
-    c.ell(13, 13, 9, 8, 'G');                 // skull
-    c.ellIn(13, 17, 7, 5, 'D');               // heavy jaw shadow
-    c.poly([[4, 4], [13, 1], [13, 9]], 'L');  // solid horns, not strokes
-    c.poly([[22, 4], [13, 1], [13, 9]], 'L');
-    c.polyIn([[6, 6], [12, 4], [12, 9]], 'D');
-    c.polyIn([[20, 6], [14, 4], [14, 9]], 'D');
-    c.poly([[5, 10], [21, 10], [21, 13], [5, 13]], 'D');   // brow shelf
-    c.ell(9, 15, 2, 1.8, 'O');                // eyes
-    c.ell(17, 15, 2, 1.8, 'O');
-    c.ellIn(9, 15, 0.8, 0.8, 'K');
-    c.ellIn(17, 15, 0.8, 0.8, 'K');
-    c.ellIn(13, 19, 5, 2, 'K');               // mouth
-    c.poly([[8, 18], [10, 18], [9, 14]], 'W'); // tusks
-    c.poly([[16, 18], [18, 18], [17, 14]], 'W');
+  // Redesign: one big readable head. Horns are thick triangles grown OUT of the
+  // skull sides (shared edge, not floating), eyes sit well below the brow shelf,
+  // and the tusks point up from the lower jaw.
+  const head = part(32, 26, c => {
+    c.ell(16, 14, 10, 9, 'G');                 // skull
+    c.poly([[7, 6], [0, 1], [2, 13]], 'L');    // left horn: wide base on the skull
+    c.poly([[25, 6], [32, 1], [30, 13]], 'L'); // right horn: wide base on the skull
+    c.poly([[8, 11], [24, 11], [24, 14], [8, 14]], 'D');   // brow shelf
+    c.ell(12, 17, 2.2, 2, 'O');                // eyes, clear of the brow
+    c.ell(20, 17, 2.2, 2, 'O');
+    c.ellIn(12, 17, 0.9, 0.9, 'K');
+    c.ellIn(20, 17, 0.9, 0.9, 'K');
+    c.ellIn(16, 21, 6, 2.6, 'K');              // mouth
+    c.poly([[10, 21], [12, 21], [11, 19]], 'W'); // short tusks, tips stay clear of eyes
+    c.poly([[20, 21], [22, 21], [21, 19]], 'W');
+    c.ellIn(16, 23, 8, 2.5, 'D');              // jaw shadow below mouth
   });
-  const neck = part(12, 10, c => {
-    c.ell(6, 5, 5, 5, 'G');
-    c.ellIn(6, 7, 4, 3, 'D');
+  const neck = part(14, 10, c => {
+    c.ell(7, 5, 6, 5, 'G');
+    c.ellIn(7, 7, 4.5, 3, 'D');
   });
   const torso = part(30, 26, c => {
-    c.poly([[3, 2], [27, 2], [29, 12], [24, 25], [6, 25], [1, 12]], 'G');
-    c.polyIn([[16, 2], [27, 2], [29, 12], [24, 25], [16, 25]], 'D');
-    c.ellIn(10, 8, 7, 5, 'D');                 // chest
-    c.polyIn([[5, 17], [25, 17], [24, 25], [6, 25]], 'M');  // loincloth
+    c.poly([[4, 2], [26, 2], [28, 12], [24, 25], [6, 25], [2, 12]], 'G');
+    c.polyIn([[17, 2], [26, 2], [28, 12], [24, 25], [17, 25]], 'D');
+    c.polyIn([[6, 17], [24, 17], [23, 25], [7, 25]], 'M');  // loincloth
+    c.rectIn(6, 17, 24, 18, 'Y');              // belt line so cloth reads as clothing
   });
-  const armL = part(18, 32, c => {            // hangs outside the torso
-    c.taper(14, 2, 6, 10, 6, 5, 'G');
-    c.taper(6, 10, 8, 25, 5, 4.5, 'G');
-    c.ell(8, 28, 5.5, 4.5, 'G');              // fist
-    c.taperIn(8, 13, 10, 25, 3.2, 3, 'D');
+  const armL = part(16, 32, c => {            // hangs outside the torso
+    c.taper(12, 2, 6, 12, 5.5, 4.5, 'G');
+    c.taper(6, 12, 7, 25, 4.5, 4, 'G');
+    c.ell(7, 28, 5, 4, 'G');              // fist
+    c.ellIn(7, 28, 3, 2.4, 'D');
   });
   const armR = armL.flipX();
-  const legL = part(15, 22, c => {
-    c.taper(9, 0, 6, 17, 6.5, 5.5, 'G');
-    c.ell(5, 19, 6.5, 3, 'G');                // foot
-    c.taperIn(9, 4, 7, 17, 4, 3.4, 'D');
+  const legL = part(14, 22, c => {
+    c.taper(8, 0, 6, 17, 6, 5, 'G');
+    c.ell(5, 19, 6, 3, 'G');                // foot
+    c.ellIn(5, 19, 4, 1.8, 'D');
   });
   const legR = legL.flipX();
 
   const c = new Canvas(60, 44);
-  c.blit(armL, 0, 8);
+  c.blit(armL, 2, 8);
   c.blit(armR, 42, 8);
-  c.blit(legL, 15, 22);
+  c.blit(legL, 16, 22);
   c.blit(legR, 30, 22);
-  c.blit(torso, 15, 4);
+  c.blit(torso, 15, 10);
   c.blit(neck, 24, 8);
-  c.blit(head, 17, 0);
+  c.blit(head, 14, 0);
   return c.crop();
 }
 
@@ -171,8 +172,8 @@ function banditChief() {
     c.ellIn(17.5, 12, 0.8, 0.8, 'K');
     c.ellIn(13, 18, 7, 4, 'N');            // jaw
     c.ellIn(13, 17, 5, 2, 'K');            // mouth
-    c.poly([[7, 16], [9, 16], [8, 11]], 'W');   // tusks
-    c.poly([[17, 16], [19, 16], [18, 11]], 'W');
+    c.poly([[7, 16], [9, 16], [8, 14]], 'W');   // stubby tusks, fully below the eyes
+    c.poly([[17, 16], [19, 16], [18, 14]], 'W');
     c.ellIn(13, 22, 1.6, 1.2, 'R');        // scar
   });
   const torso = part(30, 24, c => {
@@ -201,22 +202,25 @@ function banditChief() {
     c.rect(1, 15, 9, 17, 'D');              // sandal
   });
   const legR = legL.flipX();
-  const cleaver = part(30, 44, c => {       // big crude blade, diagonal
-    c.poly([[6, 0], [10, 2], [26, 40], [18, 43]], 'D');
-    c.polyIn([[8, 3], [11, 5], [24, 38], [20, 39]], 'L');
-    c.poly([[4, 0], [12, 4], [10, 8], [2, 4]], 'Y');    // collar on the haft
-    c.taper(2, 4, 0, 20, 1.6, 1.6, 'A');                // haft
+  // Cleaver held DOWN at his side, not raised across the top corner. The old diagonal
+  // blade floated detached in the upper right and read as clutter.
+  const cleaver = part(16, 36, c => {
+    c.taper(8, 0, 8, 12, 1.6, 1.6, 'A');                // haft, vertical
+    c.poly([[0, 4], [15, 4], [13, 8], [2, 8]], 'Y');    // collar
+    c.poly([[1, 8], [15, 8], [15, 30], [1, 30]], 'D');  // blade, straight down
+    c.polyIn([[3, 10], [6, 10], [6, 28], [3, 28]], 'L'); // edge highlight
+    c.poly([[1, 30], [15, 30], [8, 35]], 'D');          // tip
   });
 
   const c = new Canvas(56, 44);
   c.blit(legL, 10, 24);
   c.blit(legR, 26, 24);
-  c.blit(cleaver, 32, 0);
   c.blit(armL, 4, 12);
   c.blit(torso, 13, 10);
   c.blit(pauldron, 6, 10);
   c.blit(head, 15, 2);
-  c.blit(armR, 32, 12);
+  c.blit(armR, 30, 12);
+  c.blit(cleaver, 40, 8);   // grip overlaps the raised fist
   return c.crop();
 }
 
@@ -245,8 +249,11 @@ function rockGolem() {
   // even though both are rock.
   const arm = part(22, 22, c => {
     c.taper(20, 8, 10, 11, 5, 5.5, 'G');
-    c.ell(7, 12, 8, 8.5, 'L');             // the fist
-    c.ell(5, 8, 4.5, 4, 'W');              // knuckle highlight
+    c.ell(7, 12, 8, 8.5, 'L');             // the fist, light grey on grey body
+    // No white highlight: every attempt read as eyes and made each fist look like a
+    // second face. The L-on-G contrast plus finger grooves is enough.
+    c.limbIn(4, 10, 10, 10, 0.5, 'D');
+    c.limbIn(4, 13, 10, 13, 0.5, 'D');
     c.ellIn(7, 16, 5.5, 4, 'D');
   });
   const armR = arm.flipX();

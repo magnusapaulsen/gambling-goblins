@@ -1,5 +1,5 @@
 // ===================================================================
-// VAULT RUNNERS — prototype roguelike deckbuilder
+// GAMBLING GOBLINS — prototype roguelike deckbuilder
 // Slay the Spire flow + Clank!-simple cards + Balatro-style combo scoring
 // ===================================================================
 
@@ -22,8 +22,10 @@ const TUNING = {};
 // The counters tick per HIT, not per card: a `hits: 4` card advances the combo four
 // steps and takes the multiplier on each of its four hits. Card descs say "per ... hit"
 // to match.
-// A card with `discardCost` makes the player click that many hand cards to discard as a
-// cost before its own drawOnPlay/energyGain resolve -- see beginDiscardSelection().
+// A card with `discardCost` makes the player click that many hand cards to discard --
+// usually as a cost BEFORE its own drawOnPlay/energyGain resolve (see
+// beginDiscardSelection()). A card with `drawFirst: true` flips that order: it draws
+// first, then asks for discards out of the bigger hand. Only Overdraw uses it.
 
 function makeCard(def) {
   return { uid: null, ...def };
@@ -43,9 +45,11 @@ const CARD_LIBRARY = {
   // straight attack card, not a gold-cost gamble.
   glassCannon: { key: 'glassCannon',      name: 'Glass Cannon',    type: 'attack', cost: 0, baseDamage: 30,                                        deferredAttack: true, price: 50, desc: 'Roll a die: 4+ deals 30 damage, else this card is destroyed.',
     onPlay(card) {
+      const combatId = game.combat.combatId;
       rollDie(6, (roll) => {
+        if (game.combat.combatId !== combatId) return; // stale callback, combat replaced
         if (roll >= 4) {
-          const { damage, mult } = resolveAttackHit(card.baseDamage);
+          const { damage, mult } = resolveAttackHit(gambleBaseDamage(card.baseDamage));
           logMsg(`Glass Cannon: rolled ${roll}, hit for ${damage} damage.`);
           if (mult > 1.001) showComboPopup(`ATK x${mult.toFixed(2)}!`);
         } else {
@@ -57,6 +61,11 @@ const CARD_LIBRARY = {
       });
     },
   },
+
+  // Ambush: rewards playing it as your FIRST attack this turn.
+  // Base 4 damage, but if turnAttackCount is 0 (no attacks yet), deals +10 and gains 1 Energy.
+  // Strong opener, falls off if you combo into it. Cost 1 keeps it accessible.
+  ambush: { key: 'ambush', name: 'Ambush', type: 'attack', cost: 1, baseDamage: 4, price: 35, firstStrike: 10, firstStrikeEnergy: 1, desc: 'Deal 4 damage. If this is your first attack this turn, deal +10 damage and gain 1 Energy.' },
 
   // ==================== BLOCK ====================
   // Block mirrors attack: turnBlockCount ticks once per hit, so `hits` buys triggers here
@@ -104,7 +113,7 @@ const CARD_LIBRARY = {
     },
   },
   crackTheVault: { key: 'crackTheVault',    name: 'Crack the Vault', type: 'loot',   cost: 3, gold: 15,                                                                                                                     price: 45, desc: 'Gain 15 gold.' },
-  protectionRacket: { key: 'protectionRacket', name: 'Kickback',        type: 'loot',   cost: 1,                                          goldPerTurn: 3,                                                                      price: 50, desc: 'Gain 3 gold at the start of each turn this combat.',
+  protectionRacket: { key: 'protectionRacket', name: 'Kickback',        type: 'loot',   cost: 1,                                          goldPerTurn: 3,                                                                      price: 50, desc: 'Gain 3 gold at the start of each turn, starting next turn.',
     onPlay(card) {
       // Combat-scoped, so it survives clearTurnStatuses() and keeps paying every turn until
       // startCombat() replaces the whole combat object at the next fight. Each copy played
@@ -154,8 +163,10 @@ const CARD_LIBRARY = {
   // if that type is ever changed. Glass Cannon (ATTACK group) shares this same mechanic.
   rollTheBones: { key: 'rollTheBones',     name: 'Bones',           type: 'loot',   cost: 0,           goldCost: 5,                                                  damagePerPip: 2,                deferredAttack: true, price: 0, desc: 'Pay 5 gold. Roll a die: deal 2x the roll in damage.',
     onPlay(card) {
+      const combatId = game.combat.combatId;
       rollDie(6, (roll) => {
-        const { damage, mult } = resolveAttackHit(roll * card.damagePerPip);
+        if (game.combat.combatId !== combatId) return;
+        const { damage, mult } = resolveAttackHit(gambleBaseDamage(roll * card.damagePerPip));
         logMsg(`Bones: rolled a ${roll}, dealt ${damage} damage.`);
         if (mult > 1.001) showComboPopup(`ATK x${mult.toFixed(2)}!`);
         renderCombat();
@@ -165,9 +176,11 @@ const CARD_LIBRARY = {
   },
   doubleOrNothing: { key: 'doubleOrNothing',  name: 'Double Up',       type: 'loot',   cost: 0,           goldCost: 5,                                                                   winDamage: 15, deferredAttack: true, price: 0, desc: 'Pay 5 gold. Coin flip: heads deals 15 damage, tails nothing.',
     onPlay(card) {
+      const combatId = game.combat.combatId;
       flipCoin((heads) => {
+        if (game.combat.combatId !== combatId) return;
         if (heads) {
-          const { damage, mult } = resolveAttackHit(card.winDamage);
+          const { damage, mult } = resolveAttackHit(gambleBaseDamage(card.winDamage));
           logMsg(`Double Up: heads! Dealt ${damage} damage.`);
           if (mult > 1.001) showComboPopup(`ATK x${mult.toFixed(2)}!`);
         } else {
@@ -186,7 +199,7 @@ const CARD_LIBRARY = {
   // ==================== SKILL ====================
   sidestep: { key: 'sidestep',         name: 'Sidestep',        type: 'skill',  cost: 0, block: 2,                drawOnPlay: 2,                                      price: 45, desc: 'Gain 2 block. Draw 2 cards.' },
   gather: { key: 'gather',           name: 'Gather',          type: 'skill',  cost: 0,                          drawOnPlay: 3,                                      price: 25, desc: 'Draw 3 cards.' },
-  overdraw: { key: 'overdraw',         name: 'Overdraw',        type: 'skill',  cost: 0,                          drawOnPlay: 4, discardCost: 2,                      price: 40, desc: 'Discard 2 cards. Draw 4 cards.' },
+  overdraw: { key: 'overdraw',         name: 'Overdraw',        type: 'skill',  cost: 0,                          drawOnPlay: 4, discardCost: 2, drawFirst: true,               price: 40, desc: 'Draw 4 cards. Discard 2 cards.' },
   spark: { key: 'spark',            name: 'Spark',           type: 'skill',  cost: 0,           energyGain: 1,                                                     price: 30, desc: 'Gain 1 energy.' },
   overcharge: { key: 'overcharge',       name: 'Overcharge',      type: 'skill',  cost: 0,           energyGain: 1,                discardCost: 1,                      price: 45, desc: 'Discard 1 card. Gain 1 energy.' },
   burnout: { key: 'burnout',          name: 'Burnout',         type: 'skill',  cost: 0,           energyGain: 3, drawOnPlay: 3,                 exhaustOnPlay: true, price: 50, desc: 'Gain 3 energy. Draw 3 cards. Exhausts after use.' },
@@ -210,11 +223,45 @@ const CARD_LIBRARY = {
 // effectAmount does NOT update the desc string below it, which still prints the
 // original number; see the tuning panel's known-limitations note.
 const TRINKET_LIBRARY = {
-  shopSize:     { key: 'shopSize',     name: 'Shop Size',     price: 45, effectAmount: 1,    desc: '+1 card & trinket slot in the market.', apply(game) { game.shopSizeBonus += this.effectAmount; } },
-  maxHp:        { key: 'maxHp',        name: 'Max HP',        price: 35, effectAmount: 10,   desc: '+10 Max HP.',                          apply(game) { game.maxHp += this.effectAmount; game.hp += this.effectAmount; } },
-  handSize:     { key: 'handSize',     name: 'Hand Size',     price: 50, effectAmount: 1,    desc: '+1 card drawn per turn.',               apply(game) { game.handSizeBonus += this.effectAmount; } },
-  goldLoot:     { key: 'goldLoot',     name: 'Gold Loot',     price: 35, effectAmount: 0.10, desc: '+10% gold gained.',                    apply(game) { game.goldLootBonus += this.effectAmount; } },
-  shopDiscount: { key: 'shopDiscount', name: 'Shop Discount', price: 35, effectAmount: 0.10, desc: '-10% market prices.',                  apply(game) { game.shopDiscount += this.effectAmount; } },
+  shopSize:      { key: 'shopSize',      name: 'Shop Size',      price: 45, effectAmount: 1,    desc: '+1 card & trinket slot in the market.', apply(game) { game.shopSizeBonus += this.effectAmount; } },
+  maxHp:         { key: 'maxHp',         name: 'Max HP',         price: 35, effectAmount: 10,   desc: '+10 Max HP.',                          apply(game) { game.maxHp += this.effectAmount; game.hp += this.effectAmount; } },
+  handSize:      { key: 'handSize',      name: 'Hand Size',      price: 50, effectAmount: 1,    desc: '+1 card drawn per turn.',               apply(game) { game.handSizeBonus += this.effectAmount; } },
+  goldLoot:      { key: 'goldLoot',      name: 'Gold Loot',      price: 35, effectAmount: 0.10, desc: '+10% gold gained.',                    apply(game) { game.goldLootBonus += this.effectAmount; } },
+  shopDiscount:  { key: 'shopDiscount',  name: 'Shop Discount',  price: 35, effectAmount: 0.10, desc: '-10% market prices.',                  apply(game) { game.shopDiscount += this.effectAmount; } },
+  luckyCoin:     { key: 'luckyCoin',     name: 'Lucky Coin',     price: 45, effectAmount: 0.15, desc: '+15% damage on rolls and flips.',      apply(game) { game.gambleBonus += this.effectAmount; } },
+  bloodVial:     { key: 'bloodVial',     name: 'Blood Vial',     price: 35, effectAmount: 5,    desc: 'Heal 5 HP after each boss.',            apply(game) { game.healAfterKill += this.effectAmount; } },
+
+  // --- NEW TRINKETS -----------------------------------------------------------
+  // +1 energy per turn. The most impactful resource buff in the game; costs 60g
+  // and stacks per purchase. Reads in startCombat (initial energy) and endTurn
+  // (energy per turn).
+  energyCore:    { key: 'energyCore',    name: 'Energy Core',    price: 60, effectAmount: 1,    desc: '+1 energy per turn.',                  apply(game) { game.energyBonus += this.effectAmount; } },
+
+  // +0.1 combo step. Multiplies the value of every combo card. Stacks additively:
+  // 0.2 -> 0.3 -> 0.4 ... Scales every combo card in the deck. Costs 50g.
+  comboMaster:   { key: 'comboMaster',   name: 'Combo Master',   price: 50, effectAmount: 0.1,  desc: '+0.1 combo step.',                    apply(game) { game.comboStepBonus += this.effectAmount; } },
+
+  // +2 base damage on EVERY attack hit. Flat, honest, stacks linearly. Makes
+  // starter Strikes relevant late and feeds combo engines. Needs a new
+  // game.attackBonus read in resolveAttackHit (added).
+  whetstone:     { key: 'whetstone',     name: 'Whetstone',      price: 40, effectAmount: 2,    desc: '+2 base damage on every attack.',      apply(game) { game.attackBonus += this.effectAmount; } },
+
+  // +2 base block on EVERY block hit. Mirror of Whetstone. Pairs obscenely
+  // with Shield Bash (damage = block). Needs game.blockBonus in
+  // resolveBlockGain (added).
+  ironwoodCharm: { key: 'ironwoodCharm', name: 'Ironwood Charm',  price: 40, effectAmount: 2,    desc: '+2 base block on every block.',        apply(game) { game.blockBonus += this.effectAmount; } },
+
+  // +8 gold every market visit. Pure economy, no combat hook. Payout in
+  // openMarket before rendering.
+  coinPurse:     { key: 'coinPurse',     name: 'Coin Purse',     price: 30, effectAmount: 8,    desc: '+8 gold every market visit.',          apply(game) { game.marketGold += this.effectAmount; } },
+
+  // +10 HP on Rest & Heal. Makes the heal service scale into late run
+  // instead of falling behind Lich/Void Herald damage.
+  fieldMedic:    { key: 'fieldMedic',    name: 'Field Medic',    price: 35, effectAmount: 10,   desc: '+10 HP on Rest & Heal.',               apply(game) { game.healBonus += this.effectAmount; } },
+
+  // Second Wind: once per combat, survive lethal damage at 1 HP.
+  // Needs a per-combat flag and a hook in endTurn where boss damage lands.
+  secondWind:    { key: 'secondWind',    name: 'Second Wind',    price: 45, effectAmount: 1,    desc: 'Once per combat, survive lethal damage at 1 HP.', apply(game) { game.secondWind += this.effectAmount; } },
 };
 
 const STARTER_DECK_KEYS = ['strike', 'strike', 'strike', 'strike', 'strike', 'guard', 'guard', 'guard', 'guard', 'treasureGrab'];
@@ -223,7 +270,7 @@ const SHOP_POOL_KEYS = [
   'thousandCuts', 'armor', 'burnout',
   'brace', 'bulwark', 'stonewall', 'shieldBash', 'brambleGuard',
   'shakedown', 'skim', 'crackTheVault', 'protectionRacket', 'bloodMoney', 'hedge',
-  'rollTheBones', 'doubleOrNothing', 'glassCannon', 'loadedDiceCard',
+  'rollTheBones', 'doubleOrNothing', 'glassCannon', 'loadedDiceCard', 'ambush',
 ];
 
 // 10-boss curve (up from 4) so a run means more market visits and more time building
@@ -242,16 +289,16 @@ const SHOP_POOL_KEYS = [
 // easiest to stall on. God keeps its "no escape" flavor -- still no single dominant
 // spike -- but now also has one dead beat like every other boss.
 const BOSSES = [
-  { name: 'Rat Swarm',    maxHp: 50,  pattern: [0, 6, 9, 4] },
-  { name: 'Cave Troll',   maxHp: 68,  pattern: [0, 8, 13, 6] },
-  { name: 'Bandit Chief', maxHp: 92,  pattern: [0, 9, 16, 7] },
-  { name: 'Rock Golem',   maxHp: 122, pattern: [0, 10, 19, 8] },
-  { name: 'Swamp Hag',    maxHp: 160, pattern: [0, 12, 22, 9] },
-  { name: 'Iron Sentinel',maxHp: 205, pattern: [0, 13, 25, 10] },
-  { name: 'The Dragon',   maxHp: 260, pattern: [0, 14, 28, 11] },
-  { name: 'Lich',         maxHp: 325, pattern: [0, 15, 31, 12] },
-  { name: 'Void Herald',  maxHp: 400, pattern: [0, 16, 34, 13] },
-  { name: 'God',          maxHp: 480, pattern: [0, 13, 15, 17, 13] },
+  { name: 'Rat Swarm',    maxHp: 45,  pattern: [0, 5, 8, 4] },
+  { name: 'Cave Troll',   maxHp: 60,  pattern: [0, 7, 11, 5] },
+  { name: 'Bandit Chief', maxHp: 80,  pattern: [0, 8, 14, 6] },
+  { name: 'Rock Golem',   maxHp: 105, pattern: [0, 9, 16, 7] },
+  { name: 'Swamp Hag',    maxHp: 135, pattern: [0, 10, 18, 8] },
+  { name: 'Iron Sentinel',maxHp: 170, pattern: [0, 11, 20, 9] },
+  { name: 'The Dragon',   maxHp: 210, pattern: [0, 12, 22, 10] },
+  { name: 'Lich',         maxHp: 260, pattern: [0, 13, 24, 11] },
+  { name: 'Void Herald',  maxHp: 315, pattern: [0, 14, 26, 12] },
+  { name: 'God',          maxHp: 380, pattern: [0, 12, 14, 16, 12] },
 ];
 
 // ---------- Tunable run constants ----------
@@ -269,6 +316,7 @@ let BOSS_REWARD_BASE = 15;       // gainGold(BOSS_REWARD_BASE + BOSS_REWARD_PER_
 let BOSS_REWARD_PER_BOSS = 5;
 let HEAL_COST_BASE = 15;         // healCost() = discountedPrice(HEAL_COST_BASE); heal amount itself stays a fixed 15, not tunable
 let REMOVE_COST_BASE = 25;
+let UPGRADE_COST_BASE = 40;      // upgradeCost() = discountedPrice(UPGRADE_COST_BASE); the +4 itself is fixed, like the heal amount
 let REROLL_COST_START = 1;       // game.rerollCost starts here each newRun()
 let REROLL_COST_STEP = 1;        // and climbs by this much every rerollShop()
 
@@ -306,6 +354,7 @@ function applyTuningPatch() {
   if (c.BOSS_REWARD_PER_BOSS != null) BOSS_REWARD_PER_BOSS = c.BOSS_REWARD_PER_BOSS;
   if (c.HEAL_COST_BASE != null) HEAL_COST_BASE = c.HEAL_COST_BASE;
   if (c.REMOVE_COST_BASE != null) REMOVE_COST_BASE = c.REMOVE_COST_BASE;
+  if (c.UPGRADE_COST_BASE != null) UPGRADE_COST_BASE = c.UPGRADE_COST_BASE;
   if (c.REROLL_COST_START != null) REROLL_COST_START = c.REROLL_COST_START;
   if (c.REROLL_COST_STEP != null) REROLL_COST_STEP = c.REROLL_COST_STEP;
 }
@@ -326,6 +375,15 @@ function newRun() {
     goldLootBonus: 0,
     shopDiscount: 0,
     shopSizeBonus: 0,
+    gambleBonus: 0,       // Lucky Coin: fractional bonus to roll/flip damage, stacks
+    healAfterKill: 0,     // Blood Vial: HP restored in checkCombatEnd's boss-kill branch
+    energyBonus: 0,       // Energy Core: +energy per turn, stacks
+    comboStepBonus: 0,    // Combo Master: additive combo step, stacks
+    attackBonus: 0,       // Whetstone: flat damage added to every attack hit
+    blockBonus: 0,        // Ironwood Charm: flat block added to every block hit
+    marketGold: 0,        // Coin Purse: gold per market visit
+    healBonus: 0,         // Field Medic: extra HP on Rest & Heal
+    secondWind: 0,        // Second Wind: once per combat survive lethal at 1 HP
     trinketLevels: Object.fromEntries(Object.keys(TRINKET_LIBRARY).map(k => [k, 0])),
     // Cost of the next market card reroll -- climbs by 1 each use and never resets between
     // shop visits (only newRun() resets it), so rerolling repeatedly across a whole run
@@ -370,19 +428,27 @@ function discountedPrice(basePrice) {
   return Math.max(1, Math.round(basePrice * (1 - game.shopDiscount)));
 }
 
+// Single seam for gamble damage, the way gainGold is the single seam for gold gains:
+// every die roll and coin flip routes its base damage through the Lucky Coin bonus.
+// Rounds so a fractional bonus still lands whole damage (15 * 1.15 -> 17, not 17.25).
+function gambleBaseDamage(base) {
+  return Math.round(base * (1 + game.gambleBonus));
+}
+
 function cardShopSlots() { return Math.min(SHOP_POOL_KEYS.length, 4 + game.shopSizeBonus); }
 function trinketShopSlots() { return Math.min(Object.keys(TRINKET_LIBRARY).length, 3 + game.shopSizeBonus); }
 
 // ---------- Combat setup ----------
 function startCombat() {
   const bossDef = BOSSES[game.bossIndex];
+  const energyThisTurn = BASE_ENERGY + (game.energyBonus || 0);
   game.combat = {
     boss: { name: bossDef.name, hp: bossDef.maxHp, maxHp: bossDef.maxHp, pattern: bossDef.pattern, patternIndex: 0 },
     drawPile: shuffle(game.deck),
     hand: [],
     discardPile: [],
     block: 0,
-    energy: BASE_ENERGY,
+    energy: energyThisTurn,
     turnAttackCount: 0,
     turnBlockCount: 0,
     turnDamageDealt: 0,
@@ -393,6 +459,8 @@ function startCombat() {
     rolling: false,     // true for the ~1s a die/coin is spinning -- blocks playing cards and ending the turn
     ended: false,       // set once by checkCombatEnd -- makes a second call for this fight a no-op
     log: [],
+    secondWindUsed: false,  // Second Wind: once per combat
+    combatId: ++uidCounter, // unique ID to detect stale callbacks after newRun()
   };
   drawCards(currentHandSize());
   logMsg(`--- ${bossDef.name} appears! ---`);
@@ -445,7 +513,9 @@ function addStatus(on, scope, effect) {
 }
 
 function fireEvent(eventName, payload) {
-  for (const status of game.combat.statuses) {
+  // Iterate a snapshot so listeners that call addStatus for the same event
+  // don't affect the current dispatch (avoids infinite loops / skipped entries).
+  for (const status of [...game.combat.statuses]) {
     if (status.on === eventName) status.effect(payload);
   }
 }
@@ -470,6 +540,7 @@ function discardRandomCards(n) {
 // playCard, so it has to come out of every zone too, or it gets reshuffled and replayed
 // for the rest of the fight. Also counts as a "miss" for Sore Loser-style passives.
 function trashCard(card) {
+  if (!game.combat) return; // defensive: never called outside combat, but guard anyway
   const remainingDeck = game.deck.filter(x => x.uid !== card.uid);
   if (remainingDeck.length === 0) {
     // Never let a trash effect empty the run deck -- with nothing left to draw, the run
@@ -481,8 +552,6 @@ function trashCard(card) {
     return;
   }
   game.deck = remainingDeck;
-  // Only ever called while a card is being played mid-combat, so game.combat always
-  // exists here -- same assumption logMsg/fireEvent below already make.
   const c = game.combat;
   c.drawPile = c.drawPile.filter(x => x.uid !== card.uid);
   c.hand = c.hand.filter(x => x.uid !== card.uid);
@@ -492,16 +561,31 @@ function trashCard(card) {
   fireEvent('cardMissed', { card });
 }
 
+// Pure combo math, shared by the resolvers below and the hand preview (see
+// previewCardNumbers). Given the count of prior hits this turn, what does the next
+// hit deal or grant? No state touched here -- the resolvers bump the counters, this
+// only computes -- so the number on the card face and the number that actually lands
+// are produced by the same formula and can never drift apart.
+function attackHitOutcome(baseDamage, comboBonus, priorHits) {
+  const mult = 1 + (COMBO_STEP + (game.comboStepBonus || 0)) * priorHits;
+  return { damage: Math.round((baseDamage + comboBonus * priorHits) * mult), mult };
+}
+function blockHitOutcome(blockAmount, blockComboBonus, priorHits) {
+  const mult = 1 + (COMBO_STEP + (game.comboStepBonus || 0)) * priorHits;
+  return { block: Math.round((blockAmount + blockComboBonus * priorHits) * mult), mult };
+}
+
 // One attack hit: bumps the per-turn attack combo, applies the multiplier, and lands the
 // damage. Shared by the normal attack branch in playCard and by cards whose damage
 // resolves later (Glass Cannon's roll), so a deferred hit scores exactly like an
 // immediate one instead of duplicating the combo formula.
+// Whetstone adds flat damage to EVERY hit (baseDamage passed in includes per-card
+// comboBonus, we add the global attackBonus here so multi-hit cards get it per hit).
 function resolveAttackHit(baseDamage, comboBonus = 0) {
   const c = game.combat;
+  const baseWithWhetstone = baseDamage + (game.attackBonus || 0);
+  const { damage, mult } = attackHitOutcome(baseWithWhetstone, comboBonus, c.turnAttackCount);
   c.turnAttackCount++;
-  const mult = 1 + COMBO_STEP * (c.turnAttackCount - 1);
-  const base = baseDamage + comboBonus * (c.turnAttackCount - 1);
-  const damage = Math.round(base * mult);
   c.boss.hp = Math.max(0, c.boss.hp - damage);
   c.turnDamageDealt += damage;
   return { damage, mult };
@@ -512,12 +596,12 @@ function resolveAttackHit(baseDamage, comboBonus = 0) {
 // order, same rounding, same optional per-trigger bonus -- so both halves of the combo
 // system score identically and multi-hit block cards (Bulwark) tick once per hit exactly
 // like multi-hit attacks do.
+// Ironwood Charm adds flat block to EVERY hit (mirror of Whetstone).
 function resolveBlockGain(blockAmount, blockComboBonus = 0) {
   const c = game.combat;
+  const blockWithCharm = blockAmount + (game.blockBonus || 0);
+  const { block, mult } = blockHitOutcome(blockWithCharm, blockComboBonus, c.turnBlockCount);
   c.turnBlockCount++;
-  const mult = 1 + COMBO_STEP * (c.turnBlockCount - 1);
-  const base = blockAmount + blockComboBonus * (c.turnBlockCount - 1);
-  const block = Math.round(base * mult);
   c.block += block;
   return { block, mult };
 }
@@ -627,7 +711,10 @@ function flipCoin(onResult) {
 // render layer call it, so a card the UI greys out is exactly a card playCard refuses.
 // A discardCost is a hard requirement, not a clamped one: the card needs that many OTHER
 // cards in hand to pay with (the card itself is still in hand here, hence length - 1),
-// otherwise it is unplayable rather than resolving at a reduced cost.
+// otherwise it is unplayable rather than resolving at a reduced cost. For drawFirst
+// cards (Overdraw) this is conservative -- the draw would supply discards on its own --
+// but it guarantees the follow-up selection can always complete, so no softlock.
+// Also accounts for discardRandom which runs before discardCost and can reduce hand size.
 function canPlayCard(card) {
   const c = game.combat;
   // Also refuses while a die/coin is spinning -- a deferred attack's combo trigger isn't
@@ -635,7 +722,11 @@ function canPlayCard(card) {
   if (!c || c.discardSelection || c.rolling) return false;
   if (card.cost > c.energy) return false;
   if (card.goldCost && card.goldCost > game.gold) return false;
-  if (card.discardCost && c.hand.length - 1 < card.discardCost) return false;
+  if (card.discardCost) {
+    const randomDiscards = card.discardRandom || 0;
+    const available = c.hand.length - 1 - randomDiscards;
+    if (available < card.discardCost) return false;
+  }
   // Self-damage must never be lethal or reduce you to 0 -- Blood Money greys itself out
   // at low HP rather than letting you cash yourself in.
   if (card.selfDamage && card.selfDamage >= game.hp) return false;
@@ -682,9 +773,16 @@ function playCard(uid) {
     // Shield Bash-style cards take their base damage from the block they are standing on
     // (the block branch above has already run), rather than from a flat baseDamage. The
     // block is read, not spent -- nothing here zeroes c.block.
-    const baseDmg = card.damageFromBlockPercent
+    let baseDmg = card.damageFromBlockPercent
       ? Math.round(c.block * card.damageFromBlockPercent)
       : (card.baseDamage || 0);
+    // First-strike bonus (Ambush): if this is the first attack this turn, add bonus damage
+    // and mark that we'll grant energy in onPlay. Checked before the first hit resolves.
+    let firstStrikeGranted = false;
+    if (card.firstStrike && c.turnAttackCount === 0) {
+      baseDmg += card.firstStrike;
+      firstStrikeGranted = true;
+    }
     let totalDmg = 0;
     let lastMult = 1;
     for (let h = 0; h < hits; h++) {
@@ -694,6 +792,11 @@ function playCard(uid) {
     }
     logMsg(`Played ${card.name}: dealt ${totalDmg} damage.`);
     if (lastMult > 1.001) comboTexts.push(`ATK x${lastMult.toFixed(2)}`);
+    // Grant first-strike energy after damage resolves (so energy is available for rest of turn)
+    if (firstStrikeGranted && card.firstStrikeEnergy) {
+      c.energy += card.firstStrikeEnergy;
+      logMsg(`${card.name}: first strike! +${card.firstStrikeEnergy} Energy.`);
+    }
   }
 
   if (card.selfDamage) {
@@ -711,12 +814,22 @@ function playCard(uid) {
   }
 
   if (card.discardCost) {
-    beginDiscardSelection(card, card.discardCost);
+    // drawFirst cards (Overdraw) draw up front so the player picks discards out of the
+    // bigger hand, freshly drawn cards included. The selection remembers the draw is
+    // done so the completion path doesn't draw a second time.
+    if (card.drawFirst && card.drawOnPlay) {
+      drawCards(card.drawOnPlay);
+      beginDiscardSelection(card, card.discardCost, true);
+    } else {
+      beginDiscardSelection(card, card.discardCost);
+    }
+    // For cards with discardCost, defer onPlay until after the cost is paid
+    // (see selectDiscard). Exception: deferredAttack cards must NOT start their
+    // roll/flip while a discard selection is open, so their onPlay is also deferred.
   } else {
     resolveDeferrableEffects(card);
+    if (card.onPlay) card.onPlay(card);
   }
-
-  if (card.onPlay) card.onPlay(card);
 
   if (comboTexts.length) showComboPopup(comboTexts.join(' / ') + '!');
 
@@ -726,14 +839,15 @@ function playCard(uid) {
 
 // energyGain and drawOnPlay are the two effects a discardCost can gate behind an
 // upfront discard -- pulled into one place so both the immediate and deferred paths
-// (see beginDiscardSelection) apply them identically.
-function resolveDeferrableEffects(card) {
+// (see beginDiscardSelection) apply them identically. skipDraw is for drawFirst cards
+// (Overdraw), whose draw already happened before the selection opened.
+function resolveDeferrableEffects(card, skipDraw = false) {
   const c = game.combat;
   if (card.energyGain) {
     c.energy += card.energyGain;
     logMsg(`${card.name} grants ${card.energyGain} energy.`);
   }
-  if (card.drawOnPlay) {
+  if (!skipDraw && card.drawOnPlay) {
     drawCards(card.drawOnPlay);
   }
 }
@@ -741,8 +855,10 @@ function resolveDeferrableEffects(card) {
 // ---------- Discard-cost cards (an "offering" paid before the card's effect fires) ----------
 // canPlayCard guarantees enough other cards are in hand before the card is ever played,
 // so there is no clamping or skip-the-cost path here -- the discard always happens in full.
-function beginDiscardSelection(card, count) {
-  game.combat.discardSelection = { forCard: card, remaining: count };
+// drawDone marks a drawFirst selection (Overdraw): the draw resolved up front in
+// playCard, so only the energy half (if any) is still pending at completion.
+function beginDiscardSelection(card, count, drawDone = false) {
+  game.combat.discardSelection = { forCard: card, remaining: count, drawDone };
   logMsg(`${card.name}: choose ${count} card(s) to discard.`);
 }
 
@@ -756,8 +872,10 @@ function selectDiscard(uid) {
   c.discardSelection.remaining--;
   if (c.discardSelection.remaining <= 0) {
     const finishedCard = c.discardSelection.forCard;
+    const skipDraw = !!c.discardSelection.drawDone;
     c.discardSelection = null;
-    resolveDeferrableEffects(finishedCard);
+    resolveDeferrableEffects(finishedCard, skipDraw);
+    if (finishedCard.onPlay) finishedCard.onPlay(finishedCard);
   }
   renderCombat();
 }
@@ -787,6 +905,7 @@ function endTurn() {
   c.boss.patternIndex = (c.boss.patternIndex + 1) % c.boss.pattern.length;
   fireEvent('playerAttacked', { damage: dmg }); // Bramble Guard-style retaliation
   const dealt = Math.max(0, dmg - c.block);
+  const hpBefore = game.hp;
   game.hp = Math.max(0, game.hp - dealt);
   if (dmg === 0) {
     logMsg(`${c.boss.name} does nothing this turn.`);
@@ -795,6 +914,13 @@ function endTurn() {
   }
   c.block = 0;
   clearTurnStatuses();
+
+  // Second Wind: survive lethal damage once per combat
+  if (game.hp <= 0 && (game.secondWind || 0) > 0 && !c.secondWindUsed) {
+    game.hp = 1;
+    c.secondWindUsed = true;
+    logMsg(`Second Wind triggers! You survive at 1 HP.`);
+  }
 
   if (game.hp <= 0) {
     renderCombat();
@@ -812,7 +938,7 @@ function endTurn() {
   }
 
   // new player turn
-  c.energy = BASE_ENERGY;
+  c.energy = BASE_ENERGY + (game.energyBonus || 0);
   c.turnAttackCount = 0;
   c.turnBlockCount = 0;
   c.turnDamageDealt = 0;
@@ -850,6 +976,15 @@ function checkCombatEnd() {
     c.ended = true;
     const reward = gainGold(BOSS_REWARD_BASE + BOSS_REWARD_PER_BOSS * game.bossIndex);
     logMsg(`${c.boss.name} defeated! +${reward} gold.`);
+    // Blood Vial pays out here, once per kill, before the market opens. Capped at max
+    // HP and silent at full health -- a 0-heal log line would just be noise.
+    if (game.healAfterKill > 0) {
+      const healed = Math.min(game.maxHp - game.hp, game.healAfterKill);
+      if (healed > 0) {
+        game.hp += healed;
+        logMsg(`Blood Vial restores ${healed} HP.`);
+      }
+    }
     openMarket();
   }
 }
@@ -859,27 +994,45 @@ let marketState = null;
 
 function openMarket() {
   const cardOffers = shuffle(SHOP_POOL_KEYS).slice(0, cardShopSlots()).map(k => ({ ...CARD_LIBRARY[k] }));
-  marketState = { cardOffers, boughtCardKeys: new Set() };
+  marketState = { cardOffers, trinketOrder: rollTrinketOrder(), boughtCardKeys: new Set() };
+  // Coin Purse: +gold per market visit
+  if (game.marketGold > 0) {
+    const gained = Math.round(game.marketGold);
+    game.gold += gained;
+    logMsg(`Coin Purse grants ${gained} gold.`);
+  }
   showScreen('screen-market');
   renderMarket();
 }
 
-// Rerolls just the card offers for gold, at an ever-climbing price (see rerollCost's
-// comment in newRun). Trinkets are a deterministic slice of TRINKET_LIBRARY, not a random
-// draw, so there's nothing to reroll there.
+// Trinket shelf order: Shop Size is always first (it must stay reachable -- otherwise it
+// could hide behind its own "+1 shop slot" effect), the rest are shuffled fresh every
+// market visit so a bigger library still means real choice instead of the same 3 faces.
+// Cached on marketState per visit (not recomputed per render) so buying one trinket
+// doesn't reshuffle the others out from under the player mid-visit.
+function rollTrinketOrder() {
+  const rest = shuffle(Object.keys(TRINKET_LIBRARY).filter(k => k !== 'shopSize'));
+  return ['shopSize', ...rest];
+}
+
+// Rerolls the card offers AND reshuffles the trinket shelf, at the same ever-climbing
+// price (see rerollCost's comment in newRun).
 function rerollShop() {
   if (game.gold < game.rerollCost) return;
   game.gold -= game.rerollCost;
   game.rerollCost += REROLL_COST_STEP;
   marketState.cardOffers = shuffle(SHOP_POOL_KEYS).slice(0, cardShopSlots()).map(k => ({ ...CARD_LIBRARY[k] }));
+  marketState.trinketOrder = rollTrinketOrder();
   marketState.boughtCardKeys = new Set();
   renderMarket();
 }
 
-// Trinket offers aren't rolled/cached like cards -- they're a deterministic slice of
-// TRINKET_LIBRARY sized by the current shopSize level, so they're always computed fresh.
+// Trinket offers are the cached visit order, sliced to the current shopSize level --
+// slicing live (rather than caching the sliced list) means buying Shop Size mid-visit
+// immediately reveals the extra slot, the same way growCardOffersToShopSize does for cards.
 function currentTrinketOffers() {
-  return Object.values(TRINKET_LIBRARY).slice(0, trinketShopSlots());
+  const order = (marketState && marketState.trinketOrder) || ['shopSize', ...Object.keys(TRINKET_LIBRARY).filter(k => k !== 'shopSize')];
+  return order.slice(0, trinketShopSlots()).map(k => TRINKET_LIBRARY[k]);
 }
 
 // If Shop Size was just bought, grow this visit's card list immediately instead of
@@ -924,12 +1077,15 @@ function buyMarketTrinket(idx) {
 
 function healCost() { return discountedPrice(HEAL_COST_BASE); }
 function removeCost() { return discountedPrice(REMOVE_COST_BASE); }
+function upgradeCost() { return discountedPrice(UPGRADE_COST_BASE); }
 
 function doHeal() {
   const cost = healCost();
   if (game.gold < cost || game.hp >= game.maxHp) return;
   game.gold -= cost;
-  game.hp = Math.min(game.maxHp, game.hp + 15);
+  const healAmount = 15 + (game.healBonus || 0);
+  game.hp = Math.min(game.maxHp, game.hp + healAmount);
+  if (game.healBonus > 0) logMsg(`Field Medic restores ${game.healBonus} additional HP.`);
   renderMarket();
 }
 
@@ -949,6 +1105,47 @@ function renderRemoveScreen() {
     div.onclick = () => {
       game.deck.splice(i, 1);
       game.gold -= removeCost();
+      showScreen('screen-market');
+      renderMarket();
+    };
+    el.appendChild(div);
+  });
+}
+
+// ---------- Card upgrades ----------
+// Attack/block cards only: +4 to baseDamage and/or block, once per card. Loot/skill
+// cards have no flat number an upgrade could honestly touch (their value lives in
+// onPlay closures and per-turn counters), so they're excluded rather than given a
+// fake +1. The type-line stat and badges read the live fields, so the upgraded
+// numbers show up everywhere automatically; only the static desc string needs help,
+// which cardDescText supplies via the upgrade note below.
+const UPGRADE_BONUS = 4;
+
+function upgradeableCards() {
+  return game.deck.filter(card => !card.upgraded && (card.baseDamage != null || card.block != null));
+}
+
+function openUpgradeScreen() {
+  if (game.gold < upgradeCost() || upgradeableCards().length === 0) return;
+  showScreen('screen-upgrade');
+  renderUpgradeScreen();
+}
+
+function renderUpgradeScreen() {
+  const el = document.getElementById('upgrade-deck-list');
+  el.innerHTML = '';
+  upgradeableCards().forEach((card) => {
+    const div = document.createElement('div');
+    div.className = `card shop-card ${card.type}`;
+    div.innerHTML = cardFaceHTML(card, null);
+    div.onclick = () => {
+      const notes = [];
+      if (card.baseDamage != null) { card.baseDamage += UPGRADE_BONUS; notes.push(`+${UPGRADE_BONUS} damage`); }
+      if (card.block != null) { card.block += UPGRADE_BONUS; notes.push(`+${UPGRADE_BONUS} block`); }
+      card.upgraded = true;
+      card.upgradeNote = notes.join(' & ');
+      card.name += ' +';
+      game.gold -= upgradeCost();
       showScreen('screen-market');
       renderMarket();
     };
@@ -978,6 +1175,9 @@ function handKeyLabel(index) {
 document.addEventListener('keydown', (e) => {
   if (!game || !game.combat) return;
   if (!document.getElementById('screen-combat').classList.contains('active')) return;
+  // Block all keyboard input while a die/coin is spinning -- prevents Tab+Space
+  // bypassing the overlay and calling endTurn/playCard mid-roll.
+  if (game.combat.rolling) return;
 
   // Space ends the turn -- preventDefault so it doesn't also scroll the page or, if an
   // <button> happens to have focus, double-fire via the browser's own space-to-click.
@@ -1011,7 +1211,10 @@ function showScreen(id) {
 }
 
 function cardDescText(card) {
-  return card.desc;
+  // Upgraded cards keep their original desc (the numbers in it are stale by exactly
+  // UPGRADE_BONUS) with the upgrade appended, so the face stays honest without
+  // rewriting per-card strings at upgrade time.
+  return card.upgraded ? `${card.desc} (${card.upgradeNote} upgraded.)` : card.desc;
 }
 
 // ---------- Card sprites (pixel art) ----------
@@ -1027,6 +1230,7 @@ twinBlades:[[6,0,1,1,'W'],[7,1,1,1,'W'],[8,2,1,1,'W'],[9,3,1,1,'W'],[10,4,1,1,'W
 thousandCuts:[[3,8,2,1,'C'],[4,9,2,1,'C'],[5,10,2,1,'C'],[6,11,2,1,'C'],[9,8,2,1,'C'],[10,9,2,1,'C'],[11,10,2,1,'C'],[12,11,2,1,'C'],[15,8,2,1,'C'],[16,9,2,1,'C'],[17,10,2,1,'C'],[18,11,2,1,'C'],[21,8,2,1,'C'],[22,9,2,1,'C'],[23,10,2,1,'C'],[24,11,2,1,'C'],[27,8,2,1,'C'],[28,9,2,1,'C'],[29,10,2,1,'C'],[30,11,2,1,'C'],[3,7,2,1,'W'],[9,7,2,1,'W'],[15,7,2,1,'W'],[21,7,2,1,'W'],[27,7,2,1,'W']],
 heavyStrike:[[9,3,15,1,'W'],[9,4,15,6,'C'],[15,10,3,10,'W'],[11,6,2,2,'K'],[20,6,2,2,'K']],
 glassCannon:[[15,6,2,1,'C'],[14,7,4,1,'C'],[13,8,6,1,'C'],[12,9,8,2,'C'],[13,11,6,1,'C'],[14,12,4,1,'C'],[15,13,2,1,'C'],[11,5,1,1,'W'],[10,4,1,1,'W'],[9,3,1,1,'W'],[20,5,1,1,'W'],[21,4,1,1,'W'],[22,3,1,1,'W'],[11,14,1,1,'W'],[10,15,1,1,'W'],[9,16,1,1,'W'],[20,14,1,1,'W'],[21,15,1,1,'W'],[22,16,1,1,'W']],
+ambush:[[15,4,2,1,'W'],[14,5,4,1,'W'],[13,6,6,1,'W'],[12,7,8,1,'W'],[11,8,10,1,'W'],[10,9,12,1,'W'],[15,4,2,1,'C'],[14,5,1,1,'C'],[17,5,1,1,'C'],[13,6,1,1,'C'],[18,6,1,1,'C'],[12,7,1,1,'C'],[19,7,1,1,'C'],[11,8,2,1,'C'],[10,9,1,1,'C'],[21,9,1,1,'C'],[10,10,1,1,'C'],[21,10,1,1,'C'],[10,11,1,1,'C'],[21,11,1,1,'C'],[10,12,1,1,'C'],[21,12,1,1,'C'],[11,13,2,1,'C'],[12,14,4,1,'C'],[11,14,1,2,'C'],[20,14,1,2,'C'],[12,16,4,2,'C'],[11,18,6,1,'C'],[10,19,8,1,'C'],[5,15,4,3,'W'],[23,15,4,3,'W'],[4,14,1,1,'W'],[27,14,1,1,'W'],[3,15,1,1,'W'],[28,15,1,1,'W'],[4,17,3,1,'W'],[25,17,3,1,'W'],[5,18,2,1,'W'],[25,18,2,1,'W'],[5,19,1,1,'W'],[26,19,1,1,'W'],[7,15,2,1,'K'],[23,15,2,1,'K'],[6,16,4,1,'K'],[22,16,4,1,'K'],[5,17,6,1,'K'],[21,17,6,1,'K']],
 guard:[[11,3,10,1,'W'],[11,4,10,6,'C'],[12,10,8,2,'C'],[13,12,6,2,'C'],[14,14,4,1,'C'],[15,15,2,1,'C'],[11,4,1,6,'W'],[20,4,1,6,'W']],
 brace:[[4,12,24,1,'W'],[4,13,24,3,'C'],[7,16,2,3,'C'],[23,16,2,3,'C']],
 stonewall:[[4,5,24,1,'W'],[4,6,24,12,'C'],[4,9,24,1,'K'],[4,13,24,1,'K'],[11,6,1,3,'K'],[19,6,1,3,'K'],[7,10,1,3,'K'],[15,10,1,3,'K'],[23,10,1,3,'K'],[11,14,1,4,'K'],[19,14,1,4,'K']],
@@ -1113,7 +1317,9 @@ if (typeof window !== 'undefined' && window.console && window.console.info) {
 // silently dropped the viewBox and preserveAspectRatio -- and an SVG with no viewBox has
 // no coordinate mapping, so every rect drew at 1 unit = 1 CSS pixel and the art came out
 // tiny no matter how large the container was.
-function bossPortraitSVG(bossName, variant, className) {
+// `includeBackground` controls whether the pixel-grid pattern backdrop is drawn.
+// For the 'flash' variant we set it FALSE so only the boss pixels turn red, not the empty space.
+function bossPortraitSVG(bossName, variant, className, includeBackground = true) {
   // hasOwnProperty, not a plain lookup: BOSS_PORTRAITS['constructor'] (or 'toString',
   // 'valueOf', ...) otherwise resolves to something on Object.prototype, and iterating
   // that throws. Nothing here ever passes a non-literal name today, but the guard costs
@@ -1147,7 +1353,10 @@ function bossPortraitSVG(bossName, variant, className) {
   // preserveAspectRatio="meet", so a tall narrow boss is height-limited and a wide
   // squat one is width-limited, and each is as large as its own shape allows.
   const [vx, vy, vw, vh] = BOSS_VIEWS[bossName] || [0, 0, BOSS_GRID_W, BOSS_GRID_H];
-  return `<svg${className ? ` class="${className}"` : ''} viewBox="${vx} ${vy} ${vw} ${vh}" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg"><defs><pattern id="${pid}" width="1" height="1" patternUnits="userSpaceOnUse"><path d="M1 0 L0 0 0 1" fill="none" stroke="${BOSS_INK[accent]}" stroke-width="0.06" opacity="0.18"/></pattern></defs><rect x="${vx}" y="${vy}" width="${vw}" height="${vh}" fill="url(#${pid})"/>${g}</svg>`;
+  const backgroundRect = includeBackground
+    ? `<rect x="${vx}" y="${vy}" width="${vw}" height="${vh}" fill="url(#${pid})"/>`
+    : '';
+  return `<svg${className ? ` class="${className}"` : ''} viewBox="${vx} ${vy} ${vw} ${vh}" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg"><defs><pattern id="${pid}" width="1" height="1" patternUnits="userSpaceOnUse"><path d="M1 0 L0 0 0 1" fill="none" stroke="${BOSS_INK[accent]}" stroke-width="0.06" opacity="0.18"/></pattern></defs>${backgroundRect}${g}</svg>`;
 }
 
 // ---------- Hit reaction ----------
@@ -1191,8 +1400,10 @@ function renderBossPortrait(bossName, bossHp) {
   // boss flashing red while the artwork underneath stays put -- no SVG filter, no second
   // set of pixel data, and the silhouette can't shift because the two layers share the
   // same viewBox and geometry exactly.
-  el.innerHTML = bossPortraitSVG(bossName, 'base', 'base')
-               + bossPortraitSVG(bossName, 'flash', 'flash');
+  // Flash layer excludes the background pattern (includeBackground=false) so ONLY the
+  // boss pixels turn red, not the empty space around them.
+  el.innerHTML = bossPortraitSVG(bossName, 'base', 'base', true)
+               + bossPortraitSVG(bossName, 'flash', 'flash', false);
   el.classList.remove('empty');
 
   // A rising HP means a new fight or a heal, not a hit: rebase without flashing.
@@ -1236,29 +1447,100 @@ function cornerBadges(card, keybind) {
   `;
 }
 
+// What this card would do if played right now, with the current turn's combo counts.
+// Mirrors playCard's block-then-attack branches hit for hit (including multi-hit cards,
+// whose later hits score at higher counts), but touches nothing -- pure read of
+// game.combat. Deferred attacks (Glass Cannon) and gold-cost gambles (Bones, Double Up)
+// are deliberately excluded: their outcome is random, so there is nothing honest to
+// preview and they keep their static base numbers.
+function previewCardNumbers(card) {
+  const c = game.combat;
+  const out = { atk: null, atkMult: 1, block: null, blockMult: 1, gold: null };
+  // Block BEFORE attack, exactly like playCard: Shield Bash gains its block first and
+  // then hits for the block it is standing on, so its preview base includes its own
+  // block gain rather than just the block already banked.
+  if (card.block) {
+    const hits = card.hits || 1;
+    let total = 0, mult = 1;
+    for (let h = 0; h < hits; h++) {
+      const o = blockHitOutcome(card.block, card.blockComboBonus || 0, c.turnBlockCount + h);
+      total += o.block;
+      mult = o.mult;
+    }
+    out.block = total;
+    out.blockMult = mult;
+  }
+  if ((card.type === 'attack' || card.isAttackToo) && !card.deferredAttack) {
+    const baseDmg = card.damageFromBlockPercent
+      ? Math.round((c.block + (out.block || 0)) * card.damageFromBlockPercent)
+      : (card.baseDamage || 0);
+    const hits = card.hits || 1;
+    let total = 0, mult = 1;
+    for (let h = 0; h < hits; h++) {
+      const o = attackHitOutcome(baseDmg, card.comboBonus || 0, c.turnAttackCount + h);
+      total += o.damage;
+      mult = o.mult;
+    }
+    out.atk = total;
+    out.atkMult = mult;
+  }
+  if (card.goldPerAttack) {
+    out.gold = c.turnAttackCount * card.goldPerAttack;
+  }
+  return out;
+}
+
 // The type line's right-hand stat -- folds what used to be the separate attack/block badges
 // into the same band as the card's type. Shield Bash is the only card with both an attack
-// and a block value, shown as "atk/block"; cards with neither (Skim, Gather, Protection
+// and a block value, shown as "atk/block"; cards with neither (Gather, Protection
 // Racket, ...) show nothing rather than a placeholder.
-function typeLineStat(card) {
+//
+// In hand (live=true) the numbers are the preview for playing the card RIGHT NOW --
+// combo multiplier and per-hit bonuses applied, multi-hit cards summed -- instead of the
+// flat base values the shop shows. A boosted number gets the .boosted chip so a combo
+// working in your favour is visible before you commit to the play.
+function typeLineStat(card, live = false) {
   const hits = card.hits || 1;
+  // Static base values first -- the shop, the remove/upgrade screens, and any live card
+  // with nothing previewable (deferred attacks, gambles: random outcome, nothing honest
+  // to show) all display these.
   const atk = cardAttackDisplay(card);
   const block = cardBlockDisplay(card);
-  const atkText = atk == null ? null : (hits > 1 ? `${atk}x${hits}` : `${atk}`);
-  const blockText = block == null ? null : (hits > 1 ? `${block}x${hits}` : `${block}`);
-  if (atkText != null && blockText != null) return `${atkText}/${blockText}`;
-  return atkText != null ? atkText : (blockText != null ? blockText : '');
+  let atkText = atk == null ? null : (hits > 1 ? `${atk}x${hits}` : `${atk}`);
+  let blockText = block == null ? null : (hits > 1 ? `${block}x${hits}` : `${block}`);
+  let boosted = false, title = '';
+  if (live && game.combat) {
+    const p = previewCardNumbers(card);
+    if (p.atk != null) {
+      atkText = `${p.atk}`;
+      if (p.atkMult > 1.001) { boosted = true; title += `attack x${p.atkMult.toFixed(2)} `; }
+    }
+    if (p.block != null) {
+      blockText = `${p.block}`;
+      if (p.blockMult > 1.001) { boosted = true; title += `block x${p.blockMult.toFixed(2)} `; }
+    }
+    if (p.gold != null && atkText == null && blockText == null) {
+      atkText = `${p.gold}g`;
+    }
+  }
+  let text;
+  if (atkText != null && blockText != null) text = `${atkText}/${blockText}`;
+  else text = atkText != null ? atkText : (blockText != null ? blockText : '');
+  if (!text) return '';
+  return `<span class="stat${boosted ? ' boosted' : ''}"${title ? ` title="combo ${title.trim()}"` : ''}>${text}</span>`;
 }
 
 // Full card face -- badges, a framed art window, the type line, and the rules text. Shared
 // by the hand, the shop, and the remove screen so a card looks identical everywhere it's shown.
-function cardFaceHTML(card, keybind) {
+// live=true only in the hand: the type-line stat becomes the combo-aware preview for
+// playing the card right now (see typeLineStat). Everywhere else shows flat base values.
+function cardFaceHTML(card, keybind, live = false) {
   return `
     ${cornerBadges(card, keybind)}
     <div class="name${card.goldCost ? ' has-goldcost' : ''}">${card.name}</div>
     <div class="name-rule"></div>
     <div class="art">${spriteSVG(card.key, card.type)}</div>
-    <div class="typeline"><span>${card.type}</span><span class="stat">${typeLineStat(card)}</span></div>
+    <div class="typeline"><span>${card.type}</span>${typeLineStat(card, live)}</div>
     <div class="desc">${cardDescText(card)}</div>
   `;
 }
@@ -1289,6 +1571,11 @@ function renderCombat() {
 
   document.getElementById('draw-count').textContent = c.drawPile.length;
   document.getElementById('discard-count').textContent = c.discardPile.length;
+  // The combo the NEXT card would score at: same formula the preview and the resolvers
+  // share, read at the current counts. Always visible so the multiplier is plannable
+  // instead of something you only discover after committing to a play.
+  document.getElementById('combo-text').textContent =
+    `ATK x${(1 + COMBO_STEP * c.turnAttackCount).toFixed(2)} · BLK x${(1 + COMBO_STEP * c.turnBlockCount).toFixed(2)}`;
   // Only shown once something has actually been exhausted -- most fights never touch
   // this pile (only Burnout uses exhaustOnPlay today), so it stays out of the way until
   // it's relevant instead of sitting at a confusing permanent "0".
@@ -1305,7 +1592,7 @@ function renderCombat() {
     div.className = `card ${card.type}${(!selecting && !playable) ? ' unplayable' : ''}${selecting ? ' discard-target' : ''}`;
     div.dataset.uid = card.uid;
     div.draggable = !selecting;
-    div.innerHTML = cardFaceHTML(card, key);
+    div.innerHTML = cardFaceHTML(card, key, true);
     if (selecting) {
       div.onclick = () => selectDiscard(card.uid);
     } else {
@@ -1376,6 +1663,7 @@ function renderMarket() {
   document.getElementById('market-gold-text').textContent = game.gold;
   document.getElementById('heal-cost').textContent = healCost();
   document.getElementById('remove-cost').textContent = removeCost();
+  document.getElementById('upgrade-cost').textContent = upgradeCost();
   document.getElementById('reroll-cost').textContent = game.rerollCost;
   document.getElementById('btn-reroll').disabled = game.gold < game.rerollCost;
 
@@ -1434,6 +1722,7 @@ function renderMarket() {
 
   document.getElementById('btn-heal').disabled = game.gold < healCost() || game.hp >= game.maxHp;
   document.getElementById('btn-remove').disabled = game.gold < removeCost() || game.deck.length === 0;
+  document.getElementById('btn-upgrade').disabled = game.gold < upgradeCost() || upgradeableCards().length === 0;
 }
 
 // ---------- Wiring ----------
@@ -1443,7 +1732,9 @@ document.getElementById('btn-continue').onclick = continueFromMarket;
 document.getElementById('btn-reroll').onclick = rerollShop;
 document.getElementById('btn-heal').onclick = doHeal;
 document.getElementById('btn-remove').onclick = openRemoveScreen;
+document.getElementById('btn-upgrade').onclick = openUpgradeScreen;
 document.getElementById('btn-cancel-remove').onclick = () => { showScreen('screen-market'); renderMarket(); };
+document.getElementById('btn-cancel-upgrade').onclick = () => { showScreen('screen-market'); renderMarket(); };
 document.getElementById('btn-restart-lose').onclick = newRun;
 document.getElementById('btn-restart-win').onclick = newRun;
 
@@ -1473,7 +1764,7 @@ const TUNING_CARD_NUMERIC_FIELDS = [
 const TUNING_CONST_NAMES = [
   'BASE_ENERGY', 'HAND_SIZE', 'COMBO_STEP', 'START_HP', 'START_MAX_HP', 'START_GOLD',
   'BOSS_REWARD_BASE', 'BOSS_REWARD_PER_BOSS', 'HEAL_COST_BASE', 'REMOVE_COST_BASE',
-  'REROLL_COST_START', 'REROLL_COST_STEP',
+  'UPGRADE_COST_BASE', 'REROLL_COST_START', 'REROLL_COST_STEP',
 ];
 // Plain `let` bindings can't be handed around as values, so each constant gets a
 // get/set pair here -- this is the seam that lets the panel read and reassign them
@@ -1489,6 +1780,7 @@ const TUNING_CONST_ACCESSORS = {
   BOSS_REWARD_PER_BOSS: { get: () => BOSS_REWARD_PER_BOSS, set: (v) => { BOSS_REWARD_PER_BOSS = v; } },
   HEAL_COST_BASE: { get: () => HEAL_COST_BASE, set: (v) => { HEAL_COST_BASE = v; } },
   REMOVE_COST_BASE: { get: () => REMOVE_COST_BASE, set: (v) => { REMOVE_COST_BASE = v; } },
+  UPGRADE_COST_BASE: { get: () => UPGRADE_COST_BASE, set: (v) => { UPGRADE_COST_BASE = v; } },
   REROLL_COST_START: { get: () => REROLL_COST_START, set: (v) => { REROLL_COST_START = v; } },
   REROLL_COST_STEP: { get: () => REROLL_COST_STEP, set: (v) => { REROLL_COST_STEP = v; } },
 };

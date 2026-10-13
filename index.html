@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Vault Runners</title>
+<title>Gambling Goblins</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -11,16 +11,16 @@
 
   <!-- ===================== START SCREEN ===================== -->
   <section id="screen-start" class="screen">
-    <h1 class="title">VAULT RUNNERS</h1>
-    <p class="subtitle">Draw. Combo. Loot. Survive ten bosses.</p>
+    <h1 class="title">GAMBLING GOBLINS</h1>
+    <p class="subtitle">Roll. Risk. Loot. Survive ten bosses.</p>
     <button class="btn btn-primary" id="btn-new-run">Start Run</button>
     <div class="rules">
       <h3>How to play</h3>
       <ul>
-        <li><b>Attack</b> cards deal damage. Playing several in the same turn stacks a combo multiplier — chain them for big hits.</li>
+        <li><b>Attack</b> cards deal damage. Playing several in the same turn stacks a combo multiplier — chain them for big hits. Cards in hand show the damage they'll actually deal, and the combo readout above your hand shows the current multiplier.</li>
         <li><b>Block</b> cards reduce the boss's next attack. Block resets at the start of your turn.</li>
         <li><b>Loot</b> cards give gold on the spot — a few instead let you spend gold mid-fight for a big, risky payoff (a gold cost shows as a yellow badge on the card).</li>
-        <li><b>Skill</b> cards are utility — some draw extra cards, some give extra energy. The bigger ones ask you to discard a card first.</li>
+        <li><b>Skill</b> cards are utility — some draw extra cards, some give extra energy. The bigger ones ask you to discard cards as well.</li>
         <li>Watch the boss's <b>intent</b> to know what's coming and plan your block.</li>
         <li>Press a card's number key to play it, or <b>Space</b> to end your turn.</li>
         <li>Beat a boss &rarr; visit the market &rarr; buy cards / trinkets / healing &rarr; next boss.</li>
@@ -55,6 +55,7 @@
         <div>Draw: <span id="draw-count">0</span></div>
         <div>Discard: <span id="discard-count">0</span></div>
         <div id="exhaust-row" class="hidden">Exhausted: <span id="exhaust-count">0</span></div>
+        <div>Combo: <span id="combo-text"></span></div>
       </div>
       <div id="discard-prompt" class="intent hidden"></div>
       <div class="hand" id="hand"></div>
@@ -86,6 +87,7 @@
       <h3>Services</h3>
       <button class="btn" id="btn-heal">Rest &amp; Heal (15 HP) — <span id="heal-cost"></span>g</button>
       <button class="btn" id="btn-remove">Remove a card from your deck — <span id="remove-cost"></span>g</button>
+      <button class="btn" id="btn-upgrade">Upgrade a card (+4 damage/block) — <span id="upgrade-cost"></span>g</button>
     </div>
 
     <button class="btn btn-primary" id="btn-continue">Continue to next boss &rarr;</button>
@@ -96,6 +98,13 @@
     <h2>Choose a card to remove</h2>
     <div class="market-cards" id="remove-deck-list"></div>
     <button class="btn" id="btn-cancel-remove">Cancel</button>
+  </section>
+
+  <!-- ===================== CARD UPGRADE SCREEN ===================== -->
+  <section id="screen-upgrade" class="screen">
+    <h2>Choose a card to upgrade (+4 damage/block, once each)</h2>
+    <div class="market-cards" id="upgrade-deck-list"></div>
+    <button class="btn" id="btn-cancel-upgrade">Cancel</button>
   </section>
 
   <!-- ===================== END SCREENS ===================== -->

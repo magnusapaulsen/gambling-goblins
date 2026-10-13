@@ -60,7 +60,7 @@ for (const b of globalThis.__B) {
 </div>`;
 }
 
-const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Vault Runners — boss portraits</title><style>
+const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Gambling Goblins — boss portraits</title><style>
 body{background:#0b0b10;color:#fff;font:13px/1.45 'Courier New',monospace;margin:0;padding:20px}
 h1{font-size:15px;letter-spacing:.15em;margin:0 0 4px}
 .note{color:#8a8a96;margin-bottom:22px;max-width:640px}
@@ -85,7 +85,7 @@ h1{font-size:15px;letter-spacing:.15em;margin:0 0 4px}
 .intent{margin-top:8px;background:#000;display:inline-block;padding:6px 12px;border:2px solid #fff}
 .tip{color:#6a6a76;font-size:11px;margin-top:10px}
 </style></head><body>
-<h1>VAULT RUNNERS — BOSS PORTRAITS</h1>
+<h1>GAMBLING GOBLINS — BOSS PORTRAITS</h1>
 <div class="note">All ten, at the size and framing they render in the combat screen. The box is
 <code>min(100%, 620px)</code> wide by <code>clamp(170px, 28vh, 300px)</code> tall — this sheet
 renders it at the 300px ceiling, which is what a ~1080p window gets. Each portrait has
