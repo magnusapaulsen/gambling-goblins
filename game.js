@@ -1,5 +1,5 @@
 // ===================================================================
-// VAULT RUNNERS — prototype roguelike deckbuilder
+// GAMBLING GOBLINS — prototype roguelike deckbuilder
 // Slay the Spire flow + Clank!-simple cards + Balatro-style combo scoring
 // ===================================================================
 
