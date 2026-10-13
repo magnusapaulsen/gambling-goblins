@@ -84,11 +84,12 @@ const CARD_LIBRARY = {
       // Combat-scoped, unlike the old turn-scoped Spiked Armor: it survives
       // clearTurnStatuses() and keeps retaliating every turn until startCombat() replaces
       // the combat object. Each copy registers its own listener, so copies stack. The
-      // damage goes straight to boss.hp -- it resolves on the BOSS's turn, so it must not
-      // touch turnAttackCount or the player's combo.
+      // damage goes straight to the first living boss -- it resolves on the BOSS's turn,
+      // so it must not touch turnAttackCount or the player's combo.
       addStatus('playerAttacked', 'combat', () => {
         const c = game.combat;
-        c.boss.hp = Math.max(0, c.boss.hp - card.retaliateDamage);
+        const target = c.bosses.find(b => b.hp > 0);
+        if (target) target.hp = Math.max(0, target.hp - card.retaliateDamage);
         logMsg(`Bramble Guard retaliates for ${card.retaliateDamage} damage!`);
       });
     },
@@ -439,11 +440,15 @@ function cardShopSlots() { return Math.min(SHOP_POOL_KEYS.length, 4 + game.shopS
 function trinketShopSlots() { return Math.min(Object.keys(TRINKET_LIBRARY).length, 3 + game.shopSizeBonus); }
 
 // ---------- Combat setup ----------
+// BACKUP MECHANIC: after 10 turns, a second copy of the boss joins the fight.
+// Both bosses attack each turn; player must kill both. Damage targets the first living boss.
+const BACKUP_TURN_THRESHOLD = 10;
+
 function startCombat() {
   const bossDef = BOSSES[game.bossIndex];
   const energyThisTurn = BASE_ENERGY + (game.energyBonus || 0);
   game.combat = {
-    boss: { name: bossDef.name, hp: bossDef.maxHp, maxHp: bossDef.maxHp, pattern: bossDef.pattern, patternIndex: 0 },
+    bosses: [{ name: bossDef.name, hp: bossDef.maxHp, maxHp: bossDef.maxHp, pattern: bossDef.pattern, patternIndex: 0, isBackup: false }],
     drawPile: shuffle(game.deck),
     hand: [],
     discardPile: [],
@@ -461,6 +466,8 @@ function startCombat() {
     log: [],
     secondWindUsed: false,  // Second Wind: once per combat
     combatId: ++uidCounter, // unique ID to detect stale callbacks after newRun()
+    turnCount: 0,
+    backupSpawned: false,
   };
   drawCards(currentHandSize());
   logMsg(`--- ${bossDef.name} appears! ---`);
@@ -586,7 +593,9 @@ function resolveAttackHit(baseDamage, comboBonus = 0) {
   const baseWithWhetstone = baseDamage + (game.attackBonus || 0);
   const { damage, mult } = attackHitOutcome(baseWithWhetstone, comboBonus, c.turnAttackCount);
   c.turnAttackCount++;
-  c.boss.hp = Math.max(0, c.boss.hp - damage);
+  // Target the first living boss
+  const target = c.bosses.find(b => b.hp > 0);
+  if (target) target.hp = Math.max(0, target.hp - damage);
   c.turnDamageDealt += damage;
   return { damage, mult };
 }
@@ -894,24 +903,42 @@ function showComboPopup(text) {
 
 function endTurn() {
   const c = game.combat;
-  if (!c || game.hp <= 0 || c.boss.hp <= 0 || c.discardSelection || c.rolling) return;
+  if (!c || game.hp <= 0 || c.discardSelection || c.rolling) return;
+
+  // Check if all bosses are dead (should be caught by checkCombatEnd, but guard anyway)
+  const livingBosses = c.bosses.filter(b => b.hp > 0);
+  if (livingBosses.length === 0) {
+    checkCombatEnd();
+    return;
+  }
 
   // discard remaining hand
   c.discardPile.push(...c.hand);
   c.hand = [];
 
-  // boss attacks
-  const dmg = c.boss.pattern[c.boss.patternIndex];
-  c.boss.patternIndex = (c.boss.patternIndex + 1) % c.boss.pattern.length;
-  fireEvent('playerAttacked', { damage: dmg }); // Bramble Guard-style retaliation
-  const dealt = Math.max(0, dmg - c.block);
-  const hpBefore = game.hp;
-  game.hp = Math.max(0, game.hp - dealt);
-  if (dmg === 0) {
-    logMsg(`${c.boss.name} does nothing this turn.`);
-  } else {
-    logMsg(`${c.boss.name} attacks for ${dmg}${c.block > 0 ? ` (blocked ${Math.min(dmg, c.block)})` : ''}, you take ${dealt}.`);
+  // Increment turn counter and check for backup spawn
+  c.turnCount++;
+  if (!c.backupSpawned && c.turnCount >= BACKUP_TURN_THRESHOLD) {
+    spawnBackup(c);
   }
+
+  // All living bosses attack
+  let totalDealt = 0;
+  let attackLogs = [];
+  for (const boss of livingBosses) {
+    const dmg = boss.pattern[boss.patternIndex];
+    boss.patternIndex = (boss.patternIndex + 1) % boss.pattern.length;
+    fireEvent('playerAttacked', { damage: dmg, boss }); // Bramble Guard-style retaliation
+    const dealt = Math.max(0, dmg - c.block);
+    totalDealt += dealt;
+    if (dmg === 0) {
+      attackLogs.push(`${boss.name}${boss.isBackup ? ' (Backup)' : ''} does nothing this turn.`);
+    } else {
+      attackLogs.push(`${boss.name}${boss.isBackup ? ' (Backup)' : ''} attacks for ${dmg}${c.block > 0 ? ` (blocked ${Math.min(dmg, c.block)})` : ''}, you take ${dealt}.`);
+    }
+  }
+  game.hp = Math.max(0, game.hp - totalDealt);
+  attackLogs.forEach(logMsg);
   c.block = 0;
   clearTurnStatuses();
 
@@ -928,10 +955,9 @@ function endTurn() {
     return;
   }
 
-  // Retaliation (Bramble Guard) resolves on the boss's turn and can finish it off, so the
-  // fight has to be able to end here. Without this you'd start a fresh turn against a
-  // boss sitting on 0 HP.
-  if (c.boss.hp <= 0) {
+  // Retaliation (Bramble Guard) can finish off bosses, so check if all dead
+  const stillLiving = c.bosses.filter(b => b.hp > 0);
+  if (stillLiving.length === 0) {
     renderCombat();
     checkCombatEnd();
     return;
@@ -952,6 +978,24 @@ function endTurn() {
   renderCombat();
 }
 
+function spawnBackup(c) {
+  c.backupSpawned = true;
+  const primary = c.bosses[0];
+  // Backup is a copy with full HP, same pattern, but starts at a different pattern index
+  // so their attacks are offset (more dangerous)
+  const backupPatternIndex = (primary.patternIndex + Math.floor(primary.pattern.length / 2)) % primary.pattern.length;
+  const backup = {
+    name: primary.name,
+    hp: primary.maxHp,
+    maxHp: primary.maxHp,
+    pattern: primary.pattern,
+    patternIndex: backupPatternIndex,
+    isBackup: true,
+  };
+  c.bosses.push(backup);
+  logMsg(`*** ${primary.name} calls for backup! A second ${primary.name} joins the fight! ***`);
+}
+
 function checkCombatEnd() {
   const c = game.combat;
   // Idempotency guard: once this fight has already been resolved (either branch below),
@@ -968,14 +1012,19 @@ function checkCombatEnd() {
   if (game.hp <= 0) {
     c.ended = true;
     showScreen('screen-gameover');
+    // Use primary boss (first in array) for gameover message
+    const primaryBoss = c.bosses[0];
     document.getElementById('gameover-text').textContent =
-      `${c.boss.name} finished you off on boss ${game.bossIndex + 1} of ${BOSSES.length}.`;
+      `${primaryBoss.name} finished you off on boss ${game.bossIndex + 1} of ${BOSSES.length}.`;
     return;
   }
-  if (c.boss.hp <= 0) {
+  // Check if ALL bosses are dead
+  const allBossesDead = c.bosses.every(b => b.hp <= 0);
+  if (allBossesDead) {
     c.ended = true;
     const reward = gainGold(BOSS_REWARD_BASE + BOSS_REWARD_PER_BOSS * game.bossIndex);
-    logMsg(`${c.boss.name} defeated! +${reward} gold.`);
+    const primaryBoss = c.bosses[0];
+    logMsg(`${primaryBoss.name} defeated! +${reward} gold.`);
     // Blood Vial pays out here, once per kill, before the market opens. Capped at max
     // HP and silent at full health -- a 0-heal log line would just be noise.
     if (game.healAfterKill > 0) {
@@ -1560,14 +1609,27 @@ function renderCombat() {
   document.getElementById('player-gold-text').textContent = game.gold;
   document.getElementById('deck-count-text').textContent = game.deck.length;
 
-  renderBossPortrait(c.boss.name, c.boss.hp); // BOSS PORTRAITS block -- safe to delete, see above
-  document.getElementById('boss-name').textContent = `${c.boss.name}  (Boss ${game.bossIndex + 1}/${BOSSES.length})`;
-  document.getElementById('boss-hp-fill').style.width = `${Math.max(0, (c.boss.hp / c.boss.maxHp) * 100)}%`;
-  document.getElementById('boss-hp-text').textContent = `${c.boss.hp}/${c.boss.maxHp}`;
-  const nextHit = c.boss.pattern[c.boss.patternIndex];
-  document.getElementById('boss-intent').textContent = nextHit === 0
-    ? 'Intent: nothing next turn'
-    : `Intent: ${nextHit} damage next turn`;
+  // Primary boss portrait (always the first boss)
+  const primaryBoss = c.bosses[0];
+  renderBossPortrait(primaryBoss.name, primaryBoss.hp);
+
+  // Render all bosses in the container
+  const container = document.getElementById('bosses-container');
+  container.innerHTML = '';
+  c.bosses.forEach((boss, i) => {
+    const isPrimary = i === 0;
+    const living = boss.hp > 0;
+    const nextHit = boss.pattern[boss.patternIndex];
+    const bossEl = document.createElement('div');
+    bossEl.className = `boss-display${isPrimary ? ' primary' : ''}${!living ? ' dead' : ''}${boss.isBackup ? ' backup' : ''}`;
+    bossEl.innerHTML = `
+      <div class="boss-name">${boss.name}${boss.isBackup ? ' (Backup)' : ''}${isPrimary ? `  (Boss ${game.bossIndex + 1}/${BOSSES.length})` : ''}</div>
+      <div class="bar boss-bar"><div class="bar-fill boss-fill" style="width:${Math.max(0, (boss.hp / boss.maxHp) * 100)}%"></div></div>
+      <div class="boss-hp-text">${living ? `${boss.hp}/${boss.maxHp}` : 'DEFEATED'}</div>
+      <div class="intent">${living ? (nextHit === 0 ? 'Intent: nothing next turn' : `Intent: ${nextHit} damage next turn`) : ''}</div>
+    `;
+    container.appendChild(bossEl);
+  });
 
   document.getElementById('draw-count').textContent = c.drawPile.length;
   document.getElementById('discard-count').textContent = c.discardPile.length;
@@ -1867,7 +1929,7 @@ function onTuningBossMaxHpChange(idx, rawValue, el) {
   // If this boss is the one currently being fought, update the active fight's HP-bar
   // denominator too. Current HP is deliberately left alone rather than guessing whether
   // it should rescale -- see the report on this feature for the reasoning.
-  if (game && game.combat && game.bossIndex === idx) game.combat.boss.maxHp = value;
+  if (game && game.combat && game.bossIndex === idx) game.combat.bosses[0].maxHp = value;
   const baseline = TUNING_BASELINE.bosses[idx].maxHp;
   const bucket = (tuningEdits.bosses[idx] ||= {});
   if (value === baseline) {
@@ -1891,7 +1953,7 @@ function onTuningBossPatternChange(idx, rawValue, el) {
   // of only affecting the next time this boss is encountered.
   boss.pattern.splice(0, boss.pattern.length, ...values);
   if (game && game.combat && game.bossIndex === idx) {
-    game.combat.boss.patternIndex = game.combat.boss.patternIndex % boss.pattern.length;
+    game.combat.bosses[0].patternIndex = game.combat.bosses[0].patternIndex % boss.pattern.length;
   }
   const baseline = TUNING_BASELINE.bosses[idx].pattern;
   const same = baseline.length === values.length && baseline.every((v, i) => v === values[i]);
@@ -2144,8 +2206,8 @@ function resetTuningPanel() {
     boss.maxHp = base.maxHp;
     boss.pattern.splice(0, boss.pattern.length, ...base.pattern);
     if (game && game.combat && game.bossIndex === i) {
-      game.combat.boss.maxHp = base.maxHp;
-      game.combat.boss.patternIndex = game.combat.boss.patternIndex % boss.pattern.length;
+      game.combat.bosses[0].maxHp = base.maxHp;
+      game.combat.bosses[0].patternIndex = game.combat.bosses[0].patternIndex % boss.pattern.length;
     }
   });
   for (const [key, fields] of Object.entries(TUNING_BASELINE.trinkets)) {
