@@ -28,6 +28,15 @@ address bar; the seed is printed to the combat log at run start. Handle `newRun(
 with care: the replay path must stay available for the test suite (see the click-event
 guard in `newRun`).
 
+## Events
+
+At the two junctions of a run — after winning a fight (before the market) and after
+leaving the market (before the next fight) — there is a chance of a random event: a
+short scene with two choices whose outcomes are only revealed after picking. Options
+that gamble show the same dice/coin overlay as combat gambles. Pre-fight event buffs
+apply to the next fight only. `EVENT_LIBRARY` in `game.js` holds the definitions;
+`EVENT_CHANCE` tunes how often a junction fires one.
+
 ## Card / trinket descriptions
 
 Descriptions are templates, not hand-written strings: `{field}` is filled from the

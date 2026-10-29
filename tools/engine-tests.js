@@ -82,28 +82,56 @@ vm.runInContext(`
 globalThis.A = {
   getG: () => game,
   getMarket: () => marketState,
+  getEvent: () => game.event,
+  setRand: (fn) => { rand = fn; },            // test-only: force junction/die outcomes
+  mulberry32,
   newRun, endTurn, playCard, canPlayCard, trashCard, checkCombatEnd, rerollShop,
+  maybeEvent, chooseEventOption: runEventOption, eventContinue, startCombat,
   attackHitOutcome, blockHitOutcome, resolveAttackHit, resolveBlockGain,
   gainGold, discountedPrice, gambleBaseDamage, cardDescText, shuffle, fireEvent,
+  previewCardNumbers, BASE_ENERGY,
   CARD_LIBRARY, TRINKET_LIBRARY, BOSSES, SHOP_POOL_KEYS, STARTER_DECK_KEYS, SPRITES,
   BOSS_PORTRAITS, BOSS_VIEWS,
 }`, ctx);
 const A = ctx.A;
 
 // ---------- Tiny test runner ----------
+// Sequential (awaited) -- one test uses real timers for a dice-rolled event outcome,
+// and the rest stay synchronous.
 
 let passed = 0;
 const failures = [];
+const queue = [];
+
+function section(title) {
+  queue.push({ name: null, fn: null, title });
+}
 
 function test(name, fn) {
-  try {
-    fn();
-    passed++;
-    console.log(`  ok  ${name}`);
-  } catch (err) {
-    failures.push({ name, err });
-    console.log(`FAIL  ${name}`);
-    console.log(`      ${err.message.split('\n')[0]}`);
+  queue.push({ name, fn, title: null });
+}
+
+async function runAll() {
+  for (const { name, fn, title } of queue) {
+    if (title) { console.log(`\n${title}`); continue; }
+    try {
+      await fn();
+      passed++;
+      console.log(`  ok  ${name}`);
+    } catch (err) {
+      failures.push({ name, err });
+      console.log(`FAIL  ${name}`);
+      console.log(`      ${err.message.split('\n')[0]}`);
+    }
+  }
+  console.log(`\n${passed} passed, ${failures.length} failed`);
+  if (failures.length) {
+    console.log('\nfailures in detail:');
+    for (const f of failures) {
+      console.log(`\n--- ${f.name}`);
+      console.log(f.err.stack);
+    }
+    process.exit(1);
   }
 }
 
@@ -130,9 +158,18 @@ function autobattle(maxSteps = 500) {
   throw new Error('autobattle did not end within maxSteps');
 }
 
-console.log('engine-tests: game.js loaded from disk, running in Node vm\n');
+// Walks through any junction event that is blocking the flow: picks the LAST option of
+// every first-batch event (deliberately plain -- no dice overlay, no timers) and hits
+// Continue. Deterministic, and lets tests that only care about the market run to it.
+function resolvePendingEvents() {
+  let guard = 0;
+  while (A.getEvent() && guard++ < 10) {
+    A.chooseEventOption(1);   // last option: plain in every first-batch event
+    A.eventContinue();
+  }
+}
 
-// ===================================================================
+console.log('engine-tests: game.js loaded from disk, running in Node vm\n');// ===================================================================
 // Library integrity
 // ===================================================================
 
@@ -364,6 +401,7 @@ test('a seeded run replays identically end to end', () => {
   const fingerprint = (seed) => {
     A.newRun(seed);
     autobattle();
+    resolvePendingEvents();                      // any junction event on the way to the market
     const g = A.getG();
     const market = A.getMarket();
     return JSON.stringify({
@@ -382,9 +420,12 @@ test('a seeded run beats boss 1 and opens the market exactly once', () => {
   A.newRun(777);
   const g = A.getG();
   autobattle();
+  resolvePendingEvents();
   assert.ok(g.combat.ended, 'combat should be over');
   assert.ok(g.combat.bosses.every(b => b.hp <= 0), 'boss 1 should be dead');
-  assert.ok(g.gold >= 25, `reward not granted: gold=${g.gold}`);   // 10 start + 15 base reward
+  // 10 start + 15 base reward = 25 minimum EXCEPT the storyteller event's option 2
+  // (a -5g kindness donation): the last option is the cheapest path to the market.
+  assert.ok(g.gold >= 20, `reward not granted: gold=${g.gold}`);
   const market = A.getMarket();
   assert.ok(market, 'market should have opened');
   assert.strictEqual(market.boughtCardKeys.size, 0, 'no accidental auto-buys');
@@ -395,6 +436,7 @@ test('checkCombatEnd is idempotent: the reward is granted and market re-opened o
   const g = A.getG();
   g.combat.bosses[0].hp = 0;
   A.checkCombatEnd();
+  resolvePendingEvents();                       // an event may sit between the kill and the market
   const market1 = A.getMarket();
   const gold1 = g.gold;
   const offers1 = market1.cardOffers.map(o => o.key);
@@ -494,13 +536,160 @@ test('rerollShop charges and escalates, and offers actually change', () => {
 });
 
 // ===================================================================
+// Events
+// ===================================================================
 
-console.log(`\n${passed} passed, ${failures.length} failed`);
-if (failures.length) {
-  console.log('\nfailures in detail:');
-  for (const f of failures) {
-    console.log(`\n--- ${f.name}`);
-    console.log(f.err.stack);
+test('maybeEvent honors EVENT_CHANCE and defers the junction next-step', () => {
+  A.newRun(1);
+  let nextRan = false;
+  // ALWAYS above EVENT_CHANCE -> straight through, no event.
+  A.setRand(() => 0.99);
+  A.maybeEvent('premarket', () => { nextRan = true; });
+  assert.ok(nextRan, 'no event should have fired');
+  assert.strictEqual(A.getEvent(), null, 'no event state should exist');
+  // ALWAYS below -> an event fires and next stays deferred behind it.
+  A.setRand(() => 0);
+  nextRan = false;
+  A.maybeEvent('premarket', () => { nextRan = true; });
+  assert.ok(!nextRan, 'the junction should be blocked behind the event');
+  const ev = A.getEvent();
+  assert.ok(ev && ev.phase === 'choice', 'event should be waiting for a choice');
+  assert.strictEqual(ev.def.when, 'premarket');
+  assert.strictEqual(ev.def.options.length, 2, 'events are choose-one-of-two');
+  assert.ok(ev.def.options.every(o => typeof o.label === 'string' && o.label.length > 0));
+  // Restore the seeded stream so later tests are unaffected.
+  A.setRand(A.mulberry32(1));
+});
+
+test('choosing reveals the outcome; continue then proceeds to the market', () => {
+  A.newRun(1);
+  const g = A.getG();
+  // Force an event at the premarket junction; the junction's own next-step is marked.
+  A.setRand(() => 0);
+  let nextRan = false;
+  A.maybeEvent('premarket', () => { nextRan = true; });
+  A.setRand(A.mulberry32(1));
+  const goldBefore = g.gold;
+  A.chooseEventOption(1);                       // last option: plain in every first-batch event
+  const ev = A.getEvent();
+  assert.strictEqual(ev.phase, 'result', 'the reveal should be shown after choosing');
+  assert.ok(ev.result.length > 0, 'outcome text should exist');
+  A.eventContinue();
+  assert.strictEqual(A.getEvent(), null, 'event should be over after continue');
+  // The junction's deferred next-run happens exactly on Continue.
+  assert.ok(nextRan, 'junction next-step should run on Continue');
+});
+
+test('the event pool never repeats a story before running dry', () => {
+  A.newRun(1);
+  A.setRand(() => 0);                            // every junction fires an event
+  const seen = [];
+  for (let i = 0; i < 4; i++) {                  // 3 premarket defs exist: the 4th draws from a refilled pool
+    A.maybeEvent('premarket', () => { throw new Error('deflected: next ran during event'); });
+    seen.push(A.getEvent().def.key);
+    A.eventContinue();
   }
-  process.exit(1);
-}
+  const uniqueFirst = seen.slice(0, 3);
+  assert.strictEqual(new Set(uniqueFirst).size, 3, 'no repeats before pool refill');
+  assert.strictEqual(new Set(seen).size, 3, 'the refill draw repeats one of the three');
+  A.setRand(A.mulberry32(1));
+});
+
+test('an event option with a die/coin shows its roll before the reveal', async () => {
+  A.newRun(1);
+  A.setRand(() => 0);
+  A.maybeEvent('premarket', () => {});
+  A.setRand(A.mulberry32(1));
+  A.chooseEventOption(0);                       // first option: the gamble in several events
+  // Wait for the dice overlay animation to finish (real timers: 11 ticks x 60ms + 400ms).
+  const deadline = Date.now() + 4000;
+  while (A.getEvent().phase === 'choice' && Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 50));
+  }
+  const final = A.getEvent();
+  assert.strictEqual(final.phase, 'result', 'rolling should resolve into the reveal');
+  assert.ok(final.result.length > 0, 'a rolled event still reveals a text outcome');
+});
+
+test('pre-fight buffs ride the junction into startCombat and reset per fight', () => {
+  A.newRun(1);
+  const g = A.getG();
+  g.pendingFight = { attackBonus: 2, firstAttackBonus: 8, blockHitBonus: 1, startBlock: 8, energyDelta: -1, bossHpFactor: 0.8, ambushAttacks: 2 };
+  A.startCombat();
+  const c = g.combat;
+  assert.strictEqual(c.attackHitBonus, 2);
+  assert.strictEqual(c.firstAttackBonus, 8);
+  assert.strictEqual(c.blockHitBonus, 1);
+  assert.strictEqual(c.block, 8);                // startBlock applied on the fight's opening block
+  assert.strictEqual(c.energy, A.BASE_ENERGY - 1);
+  assert.strictEqual(c.ambushAttacks, 2);
+  assert.strictEqual(c.bosses[0].hp, Math.round(A.BOSSES[0].maxHp * 0.8), 'boss starts at 80% HP');
+  assert.strictEqual(g.pendingFight, null, 'event buffs are consumed by the fight that uses them');
+  // Consuming them again must not re-apply anything (no double-dipping):
+  A.startCombat();
+  assert.strictEqual(g.combat.attackHitBonus, 0, 'a second fight starts clean');
+  assert.strictEqual(g.combat.block, 0);
+});
+
+test('attackHitBonus and firstAttackBonus flow through resolveAttackHit', () => {
+  A.newRun(1);
+  const g = A.getG();
+  A.startCombat();
+  const c = g.combat;
+  c.attackHitBonus = 2;
+  c.firstAttackBonus = 8;
+  c.turnAttackCount = 0;
+  g.comboStepBonus = 0;
+  // First hit of the fight gets BOTH bonuses, multiplies at x1, and consumes the first-attack bonus.
+  assert.strictEqual(A.resolveAttackHit(6).damage, 16);  // 6 + 2 + 8
+  assert.strictEqual(c.firstAttackBonus, 0, 'first-attack bonus consumed by its one hit');
+  // Later hits only take the per-hit bonus (6 + 2 = 8, at mult 1.2 -> round(9.6) = 10).
+  assert.strictEqual(A.resolveAttackHit(6).damage, 10);
+});
+
+test('blockHitBonus flows through resolveBlockGain and boosts every block hit', () => {
+  A.newRun(1);
+  A.startCombat();
+  const c = A.getG().combat;
+  c.blockHitBonus = 3;
+  const { block } = A.resolveBlockGain(5);
+  assert.strictEqual(block, 8);
+});
+
+test('ambush doubling applies to the boss attack loop and counts every attack', () => {
+  A.newRun(1);
+  A.startCombat();
+  const g = A.getG();
+  const c = g.combat;
+  c.ambushAttacks = 2;
+  const boss = c.bosses[0];
+  boss.pattern = [5, 0];
+  boss.patternIndex = 0;
+  g.hp = 500;                                    // survive whatever comes
+  c.block = 0;
+  A.endTurn();                                   // the 5 lands doubled (10), one swing spent
+  assert.strictEqual(c.ambushAttacks, 1, 'first attack spent one ambush swing');
+  assert.ok(c.log.some(m => /AMBUSH/.test(m)), 'the log mentions the doubled hit');
+  A.endTurn();                                   // the 0 ALSO spends the last ambush swing
+  assert.strictEqual(c.ambushAttacks, 0, '"next two attacks are doubled", literally');
+});
+
+test('card previews mirror the event bonuses (the face shows the real numbers)', () => {
+  A.newRun(1);
+  A.startCombat();
+  const c = A.getG().combat;
+  A.getG().comboStepBonus = 0;
+  c.attackHitBonus = 2;
+  c.firstAttackBonus = 8;
+  c.blockHitBonus = 3;
+  const strike = { ...A.CARD_LIBRARY.strike, uid: 1 };
+  const guard = { ...A.CARD_LIBRARY.guard, uid: 2 };
+  const atk = A.previewCardNumbers(strike);      // 6 + 2 + 8 = 16 on the first hit
+  assert.strictEqual(atk.atk, 16);
+  const blk = A.previewCardNumbers(guard);       // 5 + 3 = 8
+  assert.strictEqual(blk.block, 8);
+});
+
+// ===================================================================
+
+runAll();

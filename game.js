@@ -35,7 +35,7 @@ const CARD_LIBRARY = {
   glassCannon: { key: 'glassCannon',      name: 'Glass Cannon',    type: 'attack', cost: 0, baseDamage: 30, rollHit: 4,                            deferredAttack: true, price: 50, desc: 'Roll a die: {rollHit}+ deals {baseDamage} damage, else this card is destroyed.',
     onPlay(card) {
       const combatId = game.combat.combatId;
-      rollDie(6, (roll) => {
+      rollDie(game.combat, 6, (roll) => {
         if (game.combat.combatId !== combatId) return; // stale callback, combat replaced
         if (roll >= card.rollHit) {
           const { damage, mult } = resolveAttackHit(gambleBaseDamage(card.baseDamage));
@@ -148,7 +148,7 @@ const CARD_LIBRARY = {
   rollTheBones: { key: 'rollTheBones',     name: 'Bones',           type: 'loot',   cost: 0,           goldCost: 5,                                                  damagePerPip: 2,                deferredAttack: true, price: 0, desc: 'Pay {goldCost} gold. Roll a die: deal {damagePerPip}x the roll in damage.',
     onPlay(card) {
       const combatId = game.combat.combatId;
-      rollDie(6, (roll) => {
+      rollDie(game.combat, 6, (roll) => {
         if (game.combat.combatId !== combatId) return;
         const { damage, mult } = resolveAttackHit(gambleBaseDamage(roll * card.damagePerPip));
         logMsg(`Bones: rolled a ${roll}, dealt ${damage} damage.`);
@@ -161,7 +161,7 @@ const CARD_LIBRARY = {
   doubleOrNothing: { key: 'doubleOrNothing',  name: 'Double Up',       type: 'loot',   cost: 0,           goldCost: 5,                                                                   winDamage: 15, deferredAttack: true, price: 0, desc: 'Pay {goldCost} gold. Coin flip: heads deals {winDamage} damage, tails nothing.',
     onPlay(card) {
       const combatId = game.combat.combatId;
-      flipCoin((heads) => {
+      flipCoin(game.combat, (heads) => {
         if (game.combat.combatId !== combatId) return;
         if (heads) {
           const { damage, mult } = resolveAttackHit(gambleBaseDamage(card.winDamage));
@@ -285,6 +285,270 @@ const BOSSES = [
   { name: 'God',          maxHp: 380, pattern: [0, 12, 14, 16, 12] },
 ];
 
+// ---------- Events ----------
+// Random story beats at the two junctions of a run: after winning a fight (before the
+// market, 'premarket') and after leaving the market (before the next fight, 'prefight').
+// Each one shows a scene and two LABELED-BUT-UNEXPLAINED choices; the outcome text is
+// only revealed after choosing. Options whose outcome uses a die or coin show the same
+// animation as combat gambles (the dice overlay), drawn from the run's seeded stream so
+// a whole run -- fights, markets AND events -- replays under the same ?seed=.
+// Pre-fight events apply to the NEXT fight only, via game.pendingFight, which
+// startCombat() consumes and clears (see the 'pendingFight' notes there). Pre-market
+// events resolve on the spot.
+// An event is never drawn twice until the whole pool for its junction has been used.
+const EVENT_CHANCE = 0.4; // per junction; fishing the run's key moments, not every leg
+
+const EVENT_LIBRARY = {
+  // ==================== PRE-FIGHT ====================
+  footprints: {
+    key: 'footprints', when: 'prefight',
+    name: 'Someone Follows',
+    story: 'You are walking through the woods when you hear footsteps behind you. What do you do?',
+    options: [
+      {
+        label: 'Climb up a tree',
+        outcome(done) {
+          game.pendingFight = { ...game.pendingFight, attackBonus: 2 };
+          done('You wedge yourself into the crook of a thick branch as whatever-it-was slinks past below. From up here you will hit hard: +2 damage on all attacks for the coming fight.');
+        },
+      },
+      {
+        label: 'Ask who is there',
+        outcome(done) {
+          done('The footsteps stop. For a long moment there is only breathing that is not yours. Then the woods are simply quiet again, and the path goes on. (Nothing happened.)');
+        },
+      },
+    ],
+  },
+
+  campfire: {
+    key: 'campfire', when: 'prefight',
+    name: 'The Abandoned Campfire',
+    story: 'Someone fled this campsite in a hurry. A cold fire smoulders among scattered gear; one unopened flask sits on a flat rock. What do you do?',
+    options: [
+      {
+        label: 'Search the ashes',
+        outcome(done) {
+          rollDie(game.event, 6, (roll) => {
+            if (roll >= 4) {
+              const g = gainGold(25);
+              done(`Under the warm top layer you find coins someone scooped for in panic, and missed: +${g} gold.`);
+            } else {
+              // Clamped at 1 HP: an event should carry a cost, never a loss on its own.
+              game.hp = Math.max(1, game.hp - 5);
+              done('The ashes shift, and hot embers find your bare hand. You pull back fast, palm scorched: lose 5 HP.');
+            }
+          });
+        },
+      },
+      {
+        label: 'Take the intact flask',
+        outcome(done) {
+          const healed = Math.min(game.maxHp - game.hp, 10);
+          game.hp += healed;
+          done(healed > 0
+            ? `The stopper comes free and the contents taste like pine and peace. Restore ${healed} HP.`
+            : 'It smells like pine and peace, but you are already unhurt, so it mostly tastes like regret. (No effect.)');
+        },
+      },
+    ],
+  },
+
+  luckyWell: {
+    key: 'luckyWell', when: 'prefight',
+    name: 'The Lucky Well',
+    story: 'A mossy well hunches beside the path, deep enough that thrown coins do not echo when they land. What do you do?',
+    options: [
+      {
+        label: 'Toss in 10 gold and wish',
+        outcome(done) {
+          if (game.gold < 10) {
+            done('You pat your pockets and find mostly lint and one dead beetle. The well has no mercy for the broke. (No effect.)');
+            return;
+          }
+          game.gold -= 10;
+          game.pendingFight = { ...game.pendingFight, firstAttackBonus: 8 };
+          done('The coins vanish without a splash. The air hums faintly, settling on your weapon: your first attack of the coming fight lands +8 damage harder.');
+        },
+      },
+      {
+        label: 'Read the graffiti',
+        outcome(done) {
+          game.pendingFight = { ...game.pendingFight, blockHitBonus: 1 };
+          done('Scratched into the moss by a dozen bored goblins is a prayer, or possibly a shopping list about vigilance: every block hit this fight grants +1 extra block.');
+        },
+      },
+    ],
+  },
+
+  shrine: {
+    key: 'shrine', when: 'prefight',
+    name: "The Gambler's Shrine",
+    story: 'At the crossroads squats a one-eyed stone gambler, moss in the sockets. A carved die rests at his feet, left there as an offering. What do you do?',
+    options: [
+      {
+        label: 'Bow to it',
+        outcome(done) {
+          game.pendingFight = { ...game.pendingFight, blockHitBonus: 4 };
+          done('You bow lower than dignity allows. The stone gaze holds a beat longer than physics suggests. Gain +4 block on every block hit this fight.');
+        },
+      },
+      {
+        label: 'Pocket the carved die',
+        outcome(done) {
+          flipCoin(game.event, (heads) => {
+            if (heads) {
+              const g = gainGold(15);
+              done(`The heist is clean. The idol does not move, the moss does not rustle, and you are richer: +${g} gold.`);
+            } else {
+              game.pendingFight = { ...game.pendingFight, energyDelta: -1 };
+              done('Old carved stone is heavier than it looks, and it bites. Your hand goes cold and stays cold: you start the coming fight one Energy short.');
+            }
+          });
+        },
+      },
+    ],
+  },
+
+  shortcut: {
+    key: 'shortcut', when: 'prefight',
+    name: 'The Shortcut',
+    story: 'A suspicious goblin-sized burrow cuts away into the dark, and the roadside sign promises it skips most of the feared road ahead. What do you do?',
+    options: [
+      {
+        label: 'Squeeze through',
+        outcome(done) {
+          game.hp = Math.max(1, game.hp - 5);
+          game.pendingFight = { ...game.pendingFight, bossHpFactor: 0.8 };
+          done('You arrive scraped, dusty and slightly less alive (lose 5 HP) -- but the Crew you were headed to had no time to build a warm welcome: the boss starts the fight at 80% HP.');
+        },
+      },
+      {
+        label: 'Take the long road',
+        outcome(done) {
+          done('You walk the long way. It takes longer. That is all. You arrive rested and unbattered. (Nothing happens.)');
+        },
+      },
+    ],
+  },
+
+  totem: {
+    key: 'totem', when: 'prefight',
+    name: 'The Warning Totem',
+    story: 'A crude skull-on-a-fork looms over the trailhead, scratched and cold, its many knots reading "TURN BACK." What do you do?',
+    options: [
+      {
+        label: 'Heed it',
+        outcome(done) {
+          game.pendingFight = { ...game.pendingFight, startBlock: 8 };
+          done('You leave the trailhead itself untouched, approach wide through the brush, and take position first: start the coming fight with 8 block.');
+        },
+      },
+      {
+        label: 'Kick it over',
+        outcome(done) {
+          flipCoin(game.event, (heads) => {
+            if (heads) {
+              done('It thuds into the ferns and lies there, impotent and fake. An ordinary bluff by an ordinary goblin. (Nothing happens.)');
+            } else {
+              game.pendingFight = { ...game.pendingFight, ambushAttacks: 2 };
+              done('The knotwork was not decoration: a horn blows somewhere in the brush, answered by a second farther off. The boss will open with DOUBLED attacks -- its next two swings, red-hot.');
+            }
+          });
+        },
+      },
+    ],
+  },
+
+  // ==================== PRE-MARKET ====================
+  droppedPouch: {
+    key: 'droppedPouch', when: 'premarket',
+    name: 'The Dropped Pouch',
+    story: 'You are walking through the bustling market when the goblin in front of you drops their pouch of gold. What do you do?',
+    options: [
+      {
+        label: 'Return it',
+        outcome(done) {
+          const name = grantRandomTrinket();
+          done(`Their eyes shine. "Honest fins are rare around here." They press something into your hands: a ${name}!`);
+        },
+      },
+      {
+        label: 'Snatch it',
+        outcome(done) {
+          const g = gainGold(30);
+          done(`You palm the pouch in one smooth motion and melt into the crowd: +${g} gold. The goblin is still shrugging at everyone who is not you.`);
+        },
+      },
+    ],
+  },
+
+  fortuneTent: {
+    key: 'fortuneTent', when: 'premarket',
+    name: 'The Fortune Teller',
+    story: 'A tent of faded purple sits between two stalls. The teller fans two cards face down across the table. "Sitting goblin: one of these holds your fortune." What do you do?',
+    options: [
+      {
+        label: 'Turn the left card',
+        outcome(done) {
+          rollDie(game.event, 6, (roll) => {
+            if (roll >= 4) {
+              const name = grantRandomCard();
+              done(`The card blooms into the real thing as you touch it: a ${name} joins your deck. The teller collects her needle-pointed tip. "Told you."`);
+            } else {
+              done('The card is blank on both sides. The teller shrugs. "Was not your fortune." (Nothing happens.)');
+            }
+          });
+        },
+      },
+      {
+        label: 'Turn the right card',
+        outcome(done) {
+          const g = gainGold(15);
+          done(`The right card shows an ordinary, loaded coin purse. Sliding it back wordlessly, the teller leaves a modest pouch on the felt: +${g} gold.`);
+        },
+      },
+    ],
+  },
+
+  storyteller: {
+    key: 'storyteller', when: 'premarket',
+    name: 'The Storyteller',
+    story: 'A grizzle-muzzled old goblin props up a bench near the stalls and claims he was the greatest blocker the vault ever saw. "The last secret is cheap to those who value it." What do you do?',
+    options: [
+      {
+        label: 'Pay 10 gold to learn',
+        outcome(done) {
+          if (game.gold < 10) {
+            done('He squints at your purse and shakes his head slowly. "You are not ready. Or you are broke. Probably broke." (No effect.)');
+            return;
+          }
+          game.gold -= 10;
+          const name = upgradeRandomCard();
+          done(name
+            ? `He walks you through the stone-wall parry one more time, arms like old rope, and it sticks: your ${name} is upgraded (+4 damage/block).`
+            : 'He refuses gently: "Every card you own already knows more than it wants to. Nothing left to teach." (Your gold stays.)');
+        },
+      },
+      {
+        label: 'Give him 5 gold out of kindness',
+        outcome(done) {
+          if (game.gold < 5) {
+            done('You have less than five gold and he waves it off with a snort. "Keep it, tiny gambler." (No effect.)');
+            return;
+          }
+          game.gold -= 5;
+          const healed = Math.min(game.maxHp - game.hp, 5);
+          game.hp += healed;
+          done(healed > 0
+            ? 'He pockets the coin, claps your back with surprising strength, and shares his breathing trick: restore 5 HP.'
+            : 'He pockets the coin, claps your back with surprising strength, and shares his breathing trick. You were already breathing perfectly. (No effect.)');
+        },
+      },
+    ],
+  },
+};
+
 // ---------- Tunable run constants ----------
 const HAND_SIZE = 5;
 const BASE_ENERGY = 3;
@@ -370,6 +634,15 @@ function newRun(requestedSeed) {
     // gets steadily more expensive.
     rerollCost: REROLL_COST_START,
     bossIndex: 0,
+    // Fight-scoped buffs granted by pre-fight events: a plain object of overrides
+    // (attackBonus, blockHitBonus, firstAttackBonus, startBlock, energyDelta,
+    // bossHpFactor, ambushAttacks) consumed and cleared by startCombat().
+    pendingFight: null,
+    // Events actually served this run, so a run with many junctions doesn't tell the
+    // same story twice drawn from a small library; refilled only when a pool runs dry.
+    usedEvents: new Set(),
+    // An event shown between rounds (story + hidden-outcome choices); null when none.
+    event: null,
     // combat-only state, set by startCombat
     combat: null,
   };
@@ -426,9 +699,19 @@ const BACKUP_TURN_THRESHOLD = 10;
 
 function startCombat() {
   const bossDef = BOSSES[game.bossIndex];
-  const energyThisTurn = BASE_ENERGY + (game.energyBonus || 0);
+  // A pre-fight event may have left buffs/expenses on the hook; consume and clear them
+  // here so they apply to exactly this one fight.
+  const f = game.pendingFight || null;
+  game.pendingFight = null;
+  const energyThisTurn = Math.max(0,
+    BASE_ENERGY + (game.energyBonus || 0) + (f?.energyDelta || 0));
   game.combat = {
-    bosses: [{ name: bossDef.name, hp: bossDef.maxHp, maxHp: bossDef.maxHp, pattern: bossDef.pattern, patternIndex: 0, isBackup: false }],
+    bosses: [{
+      name: bossDef.name,
+      // bossHpFactor (the Shortcut event): the crew had no time to prepare fully.
+      hp: Math.max(1, Math.round(bossDef.maxHp * (f?.bossHpFactor ?? 1))),
+      maxHp: bossDef.maxHp, pattern: bossDef.pattern, patternIndex: 0, isBackup: false,
+    }],
     drawPile: shuffle(game.deck),
     hand: [],
     discardPile: [],
@@ -447,7 +730,25 @@ function startCombat() {
     combatId: ++uidCounter, // unique ID to detect stale callbacks after newRun()
     turnCount: 0,
     backupSpawned: false,
+    // Fight-scoped event modifiers (plain numbers; also mirrored in the card previews):
+    attackHitBonus: f?.attackBonus || 0,       // flat damage on every attack hit this fight
+    firstAttackBonus: f?.firstAttackBonus || 0, // flat damage on this fight's first attack (of any turn)
+    blockHitBonus: f?.blockHitBonus || 0,      // flat block on every block hit this fight
+    ambushAttacks: f?.ambushAttacks || 0,      // the boss's next N attacks deal doubled damage
   };
+  // Careful approach (warning totem): block granted before the first card is played.
+  if (f?.startBlock) {
+    game.combat.block += f.startBlock;
+    logMsg(`Careful approach: you start the fight with ${f.startBlock} block.`);
+  }
+  // Spoken once, so the event's effects are visible on the fight screen too -- an event's
+  // outcome text scrolls away in the event screen, but the fight log is right there.
+  if (f?.attackBonus) logMsg(`High ground: attacks deal +${f.attackBonus} damage this fight.`);
+  if (f?.firstAttackBonus) logMsg(`Wish granted: your first attack lands +${f.firstAttackBonus} extra damage.`);
+  if (f?.blockHitBonus) logMsg(`Blessed: every block hit grants +${f.blockHitBonus} extra block this fight.`);
+  if (f?.energyDelta) logMsg(`Cold hand: the fight starts one Energy short.`);
+  if (f?.bossHpFactor) logMsg(`They had no time to prepare: the boss starts the fight at ${Math.round(f.bossHpFactor * 100)}% HP.`);
+  if (f?.ambushAttacks) logMsg(`*** Ambush! The boss's next ${f.ambushAttacks} attacks are doubled. ***`);
   drawCards(currentHandSize());
   logMsg(`--- ${bossDef.name} appears! ---`);
   showScreen('screen-combat');
@@ -547,10 +848,17 @@ function blockHitOutcome(blockAmount, blockComboBonus, priorHits) {
 // immediate one instead of duplicating the combo formula.
 // Whetstone adds flat damage to EVERY hit (baseDamage passed in includes per-card
 // comboBonus, we add the global attackBonus here so multi-hit cards get it per hit).
+// Pre-fight event bonuses: attackHitBonus (high ground) applies to every hit exactly
+// like Whetstone; firstAttackBonus applies once, to the first attack hit of any turn
+// this fight (the bonus is consumed the moment it lands).
 function resolveAttackHit(baseDamage, comboBonus = 0) {
   const c = game.combat;
-  const baseWithWhetstone = baseDamage + (game.attackBonus || 0);
-  const { damage, mult } = attackHitOutcome(baseWithWhetstone, comboBonus, c.turnAttackCount);
+  let baseWithBonuses = baseDamage + (game.attackBonus || 0) + (c.attackHitBonus || 0);
+  if (c.turnAttackCount === 0 && c.firstAttackBonus) {
+    baseWithBonuses += c.firstAttackBonus;
+    c.firstAttackBonus = 0;
+  }
+  const { damage, mult } = attackHitOutcome(baseWithBonuses, comboBonus, c.turnAttackCount);
   c.turnAttackCount++;
   // Target the first living boss
   const target = c.bosses.find(b => b.hp > 0);
@@ -564,9 +872,11 @@ function resolveAttackHit(baseDamage, comboBonus = 0) {
 // system score identically and multi-hit block cards (Bulwark) tick once per hit exactly
 // like multi-hit attacks do.
 // Ironwood Charm adds flat block to EVERY hit (mirror of Whetstone).
+// blockHitBonus (lucky well / shrine events) is the event twin: flat block on every
+// block hit this fight, mirrored in the preview exactly like the other bonuses.
 function resolveBlockGain(blockAmount, blockComboBonus = 0) {
   const c = game.combat;
-  const blockWithCharm = blockAmount + (game.blockBonus || 0);
+  const blockWithCharm = blockAmount + (game.blockBonus || 0) + (c.blockHitBonus || 0);
   const { block, mult } = blockHitOutcome(blockWithCharm, blockComboBonus, c.turnBlockCount);
   c.turnBlockCount++;
   c.block += block;
@@ -580,7 +890,13 @@ function resolveGoldCardOutcome(card, succeeded) {
 }
 
 // ---------- Dice & coin animations ----------
-// forcedNextRoll (from Loaded Dice) is consumed by whichever of these runs next.
+// These take a STATE object -- either game.combat or a game.event -- rather than reading
+// game.combat directly, so combat gambles and event gambles share one implementation:
+// same overlay, same spinning animation. `state.rolling` is the lock the state's owner
+// honors (canPlayCard/endTurn for combat, runEventOption/renderEvent for events), and a
+// state may carry `forcedNextRoll: 'max'` (Loaded Dice) -- events simply don't.
+// The final value is the one seeded draw that matters; the spinning faces use raw
+// Math.random so the animation doesn't consume outcome rolls from the run stream.
 function showDiceOverlay() { document.getElementById('dice-overlay').classList.remove('hidden'); }
 function hideDiceOverlay() { document.getElementById('dice-overlay').classList.add('hidden'); }
 
@@ -617,13 +933,10 @@ function renderCoinFace(letter) {
   faceEl.textContent = letter;
 }
 
-function rollDie(sides, onResult) {
-  const c = game.combat;
-  c.rolling = true;
-  const forced = c.forcedNextRoll === 'max';
-  if (forced) c.forcedNextRoll = null;
-  // The final value is the one seeded draw that matters; the spinning faces below use
-  // raw Math.random so the animation doesn't consume outcome rolls from the run stream.
+function rollDie(state, sides, onResult) {
+  state.rolling = true;
+  const forced = state.forcedNextRoll === 'max';
+  if (forced) state.forcedNextRoll = null;
   const finalValue = forced ? sides : 1 + Math.floor(rand() * sides);
 
   const resultEl = document.getElementById('dice-result-text');
@@ -643,17 +956,15 @@ function rollDie(sides, onResult) {
       renderDiePips(finalValue);
       resultEl.textContent = `Rolled a ${finalValue}!`;
       resultEl.classList.add('landed');
-      setTimeout(() => { hideDiceOverlay(); c.rolling = false; onResult(finalValue); }, 400);
+      setTimeout(() => { hideDiceOverlay(); state.rolling = false; onResult(finalValue); }, 400);
     }
   }, 60);
 }
 
-function flipCoin(onResult) {
-  const c = game.combat;
-  c.rolling = true;
-  const forced = c.forcedNextRoll === 'max';
-  if (forced) c.forcedNextRoll = null;
-  // Same split as rollDie: one seeded draw decides, Math.random drives the spin visual.
+function flipCoin(state, onResult) {
+  state.rolling = true;
+  const forced = state.forcedNextRoll === 'max';
+  if (forced) state.forcedNextRoll = null;
   const heads = forced ? true : rand() < 0.5;
 
   const resultEl = document.getElementById('dice-result-text');
@@ -672,7 +983,7 @@ function flipCoin(onResult) {
       renderCoinFace(heads ? 'H' : 'T');
       resultEl.textContent = heads ? 'Heads!' : 'Tails...';
       resultEl.classList.add('landed');
-      setTimeout(() => { hideDiceOverlay(); c.rolling = false; onResult(heads); }, 400);
+      setTimeout(() => { hideDiceOverlay(); state.rolling = false; onResult(heads); }, 400);
     }
   }, 60);
 }
@@ -885,13 +1196,19 @@ function endTurn() {
   for (const boss of livingBosses) {
     const dmg = boss.pattern[boss.patternIndex];
     boss.patternIndex = (boss.patternIndex + 1) % boss.pattern.length;
-    fireEvent('playerAttacked', { damage: dmg, boss }); // Bramble Guard-style retaliation
-    const dealt = Math.max(0, dmg - c.block);
+    // Ambush (warning totem): the boss's next N attacks deal doubled damage. The
+    // indicator counts every attack -- a 0-damage "does nothing" beat still spends one,
+    // which is exactly what "next two attacks are doubled" promises on the nose.
+    const ambush = c.ambushAttacks > 0;
+    const effective = dmg * (ambush ? 2 : 1);
+    if (ambush) c.ambushAttacks--;
+    fireEvent('playerAttacked', { damage: effective, boss }); // Bramble Guard-style retaliation
+    const dealt = Math.max(0, effective - c.block);
     totalDealt += dealt;
     if (dmg === 0) {
       attackLogs.push(`${boss.name}${boss.isBackup ? ' (Backup)' : ''} does nothing this turn.`);
     } else {
-      attackLogs.push(`${boss.name}${boss.isBackup ? ' (Backup)' : ''} attacks for ${dmg}${c.block > 0 ? ` (blocked ${Math.min(dmg, c.block)})` : ''}, you take ${dealt}.`);
+      attackLogs.push(`${boss.name}${boss.isBackup ? ' (Backup)' : ''} attacks for ${effective}${ambush ? ' (AMBUSH, doubled!)' : ''}${c.block > 0 ? ` (blocked ${Math.min(effective, c.block)})` : ''}, you take ${dealt}.`);
     }
   }
   game.hp = Math.max(0, game.hp - totalDealt);
@@ -989,7 +1306,8 @@ function checkCombatEnd() {
         logMsg(`Blood Vial restores ${healed} HP.`);
       }
     }
-    openMarket();
+    // The road to the market may hold an event; otherwise open it right here.
+    maybeEvent('premarket', openMarket);
   }
 }
 
@@ -1162,8 +1480,109 @@ function continueFromMarket() {
   if (game.bossIndex >= BOSSES.length) {
     showScreen('screen-win');
   } else {
-    startCombat();
+    // The road to the next boss may hold an event; if not, the fight starts as usual.
+    maybeEvent('prefight', startCombat);
   }
+}
+
+// ---------- Random gifting helpers (event outcomes) ----------
+// One random draw each, straight off the run's seeded stream, so the same ?seed= replays
+// the same gifts. Trinket gifts behave exactly like a market buy would (apply + level);
+// card gifts pull the shop pool, and card upgrades mirror the upgrade service.
+function grantRandomTrinket() {
+  const keys = Object.keys(TRINKET_LIBRARY);
+  const key = keys[Math.floor(rand() * keys.length)];
+  TRINKET_LIBRARY[key].apply(game);
+  game.trinketLevels[key]++;
+  return TRINKET_LIBRARY[key].name;
+}
+
+function grantRandomCard() {
+  const key = SHOP_POOL_KEYS[Math.floor(rand() * SHOP_POOL_KEYS.length)];
+  game.deck.push(instantiateCard(key));
+  return CARD_LIBRARY[key].name;
+}
+
+function upgradeRandomCard() {
+  const card = game.deck.find(c => !c.upgraded && (c.baseDamage != null || c.block != null));
+  if (!card) return null;
+  if (card.baseDamage != null) card.baseDamage += UPGRADE_BONUS;
+  if (card.block != null) card.block += UPGRADE_BONUS;
+  card.upgraded = true;
+  card.name += ' +';
+  return card.name;
+}
+
+// ---------- Events flow ----------
+// The one junction machinery: at a junction, roll (once, seeded) for whether an event
+// happens at all, pick one the run hasn't seen yet, and DEFER `next` (openMarket /
+// startCombat) behind the event screen. If the roll says no event, `next` runs right here.
+function maybeEvent(when, next) {
+  let pool = Object.keys(EVENT_LIBRARY).filter(k =>
+    EVENT_LIBRARY[k].when === when && !game.usedEvents.has(k));
+  if (pool.length === 0) {
+    // Every story for this junction has been told this run; refill and draw from a full deck.
+    for (const k of Object.keys(EVENT_LIBRARY)) {
+      if (EVENT_LIBRARY[k].when === when) game.usedEvents.delete(k);
+    }
+    pool = Object.keys(EVENT_LIBRARY).filter(k => EVENT_LIBRARY[k].when === when);
+  }
+  if (rand() >= EVENT_CHANCE) {
+    next();
+    return;
+  }
+  const key = pool[Math.floor(rand() * pool.length)];
+  game.usedEvents.add(key);
+  game.event = { def: EVENT_LIBRARY[key], phase: 'choice', result: '', rolling: false, next };
+  showScreen('screen-event');
+  renderEvent();
+}
+
+// Choosing an option reveals only the outcome; options carry no descriptions. Options
+// that gamble call rollDie/flipCoin on game.event (see the generalized signatures there),
+// so the player sees the exact same dice overlay as combat gambles before the reveal.
+function runEventOption(idx) {
+  const ev = game.event;
+  if (!ev || ev.phase !== 'choice' || ev.rolling) return;
+  ev.def.options[idx].outcome((text) => {
+    ev.result = text;
+    ev.phase = 'result';
+    renderEvent();
+  });
+}
+
+// Continue button on the outcome screen: hand control to whatever the junction was
+// headed for (openMarket / startCombat), which apply the event's effects where relevant.
+function eventContinue() {
+  const ev = game.event;
+  if (!ev || ev.phase !== 'result' || ev.rolling) return;
+  game.event = null;
+  ev.next();
+}
+
+function renderEvent() {
+  const ev = game.event;
+  if (!ev) return;
+  document.getElementById('event-title').textContent = ev.def.name;
+  document.getElementById('event-story').textContent = ev.def.story;
+  const optsEl = document.getElementById('event-options');
+  const choosing = ev.phase === 'choice';
+  optsEl.classList.toggle('hidden', !choosing);
+  if (choosing) {
+    optsEl.innerHTML = '';
+    ev.def.options.forEach((opt, i) => {
+      const b = document.createElement('button');
+      b.className = 'btn btn-event';
+      b.textContent = opt.label;
+      b.disabled = !!ev.rolling;
+      b.onclick = () => runEventOption(i);
+      optsEl.appendChild(b);
+    });
+  }
+  document.getElementById('event-result').textContent = ev.phase === 'result' ? ev.result : '';
+  document.getElementById('event-result').classList.toggle('hidden', ev.phase !== 'result');
+  document.getElementById('btn-event-continue').classList.toggle('hidden', ev.phase !== 'result');
+  document.getElementById('btn-event-continue').disabled = !!ev.rolling;
 }
 
 // ---------- Number-key hand shortcuts ----------
@@ -1488,7 +1907,10 @@ function previewCardNumbers(card) {
     const hits = card.hits || 1;
     let total = 0, mult = 1;
     for (let h = 0; h < hits; h++) {
-      const o = blockHitOutcome(card.block, card.blockComboBonus || 0, c.turnBlockCount + h);
+      // Mirrors resolveBlockGain's base: Ironwood Charm + the event's blockHitBonus.
+      const o = blockHitOutcome(
+        card.block + (game.blockBonus || 0) + (c.blockHitBonus || 0),
+        card.blockComboBonus || 0, c.turnBlockCount + h);
       total += o.block;
       mult = o.mult;
     }
@@ -1502,7 +1924,11 @@ function previewCardNumbers(card) {
     const hits = card.hits || 1;
     let total = 0, mult = 1;
     for (let h = 0; h < hits; h++) {
-      const o = attackHitOutcome(baseDmg, card.comboBonus || 0, c.turnAttackCount + h);
+      // Mirrors resolveAttackHit's base: Whetstone + the event's per-hit bonus, and the
+      // first-attack-of-the-fight bonus when this would be that very first hit.
+      let base = baseDmg + (game.attackBonus || 0) + (c.attackHitBonus || 0);
+      if (h === 0 && c.turnAttackCount === 0 && c.firstAttackBonus) base += c.firstAttackBonus;
+      const o = attackHitOutcome(base, card.comboBonus || 0, c.turnAttackCount + h);
       total += o.damage;
       mult = o.mult;
     }
@@ -1595,14 +2021,17 @@ function renderCombat() {
   c.bosses.forEach((boss, i) => {
     const isPrimary = i === 0;
     const living = boss.hp > 0;
-    const nextHit = boss.pattern[boss.patternIndex];
+    // Ambush doubles the boss's next effective hits -- the intent readout shows the
+    // number that will actually land, not the pattern's plain number.
+    const nextHitRaw = boss.pattern[boss.patternIndex];
+    const nextHit = c.ambushAttacks > 0 ? nextHitRaw * 2 : nextHitRaw;
     const bossEl = document.createElement('div');
     bossEl.className = `boss-display${isPrimary ? ' primary' : ''}${!living ? ' dead' : ''}${boss.isBackup ? ' backup' : ''}`;
     bossEl.innerHTML = `
       <div class="boss-name">${boss.name}${boss.isBackup ? ' (Backup)' : ''}${isPrimary ? `  (Boss ${game.bossIndex + 1}/${BOSSES.length})` : ''}</div>
       <div class="bar boss-bar"><div class="bar-fill boss-fill" style="width:${Math.max(0, (boss.hp / boss.maxHp) * 100)}%"></div></div>
       <div class="boss-hp-text">${living ? `${boss.hp}/${boss.maxHp}` : 'DEFEATED'}</div>
-      <div class="intent">${living ? (nextHit === 0 ? 'Intent: nothing next turn' : `Intent: ${nextHit} damage next turn`) : ''}</div>
+      <div class="intent">${living ? (nextHit === 0 ? 'Intent: nothing next turn' : `Intent: ${nextHit} damage next turn${c.ambushAttacks > 0 && nextHitRaw > 0 ? ' (AMBUSH)' : ''}`) : ''}</div>
     `;
     container.appendChild(bossEl);
   });
@@ -1779,6 +2208,7 @@ if (__inBrowser) {
   document.getElementById('btn-cancel-upgrade').onclick = () => { showScreen('screen-market'); renderMarket(); };
   document.getElementById('btn-restart-lose').onclick = newRun;
   document.getElementById('btn-restart-win').onclick = newRun;
+  document.getElementById('btn-event-continue').onclick = eventContinue;
 }
 
 if (__inBrowser) showScreen('screen-start');
