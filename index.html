@@ -129,23 +129,6 @@
 
 </div>
 
-<!-- ===================== DEV TUNING PANEL ===================== -->
-<!-- Dev-only balance-iteration tool. Toggled by the backtick key ("`"), see the "DEV
-     TUNING PANEL" block at the bottom of game.js. To strip this tool entirely, remove:
-     this whole <div>, the ".tuning-*" rules in style.css, and the marked block in game.js. -->
-<div id="tuning-panel" class="tuning-panel hidden">
-  <div class="tuning-header">
-    <h2>Tuning Panel</h2>
-    <span class="tuning-hint">backtick to close</span>
-    <div class="tuning-actions">
-      <button class="btn" id="btn-tuning-export">Export patch</button>
-      <button class="btn" id="btn-tuning-reset">Reset to file values</button>
-      <button class="btn" id="btn-tuning-close">Close</button>
-    </div>
-  </div>
-  <div class="tuning-body" id="tuning-body"></div>
-</div>
-
 <!-- BOSS ART: pure data for the boss portraits. Must load before game.js, which
      reads window.BOSS_ART. Redesign the bosses by editing this file (or the
      generator in tools/boss-art/) -- game.js only renders it and needs no changes.

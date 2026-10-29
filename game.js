@@ -3,14 +3,6 @@
 // Slay the Spire flow + Clank!-simple cards + Balatro-style combo scoring
 // ===================================================================
 
-// A patch applied over CARD_LIBRARY, BOSSES, TRINKET_LIBRARY, and the tunable constants
-// at startup (see applyTuningPatch() below the constants block). Empty by default. The
-// dev tuning panel's "Export patch" button copies a patch shaped exactly like this to the
-// clipboard, along with a plain-text changelog of what changed -- paste the patch object
-// here to bake a tuning session's numbers into the file as a one-line, reversible change.
-// Example: { twinBlades: { baseDamage: 9, price: 50 }, bosses: { 0: { maxHp: 60 } } }
-const TUNING = {};
-
 // ---------- Card definitions ----------
 // type: 'attack' | 'block' | 'loot' | 'skill'
 // 'skill' covers both draw-effect cards (drawOnPlay) and energy-effect cards (energyGain) --
@@ -27,28 +19,25 @@ const TUNING = {};
 // beginDiscardSelection()). A card with `drawFirst: true` flips that order: it draws
 // first, then asks for discards out of the bigger hand. Only Overdraw uses it.
 
-function makeCard(def) {
-  return { uid: null, ...def };
-}
-
 const CARD_LIBRARY = {
   // ==================== ATTACK ====================
-  strike: { key: 'strike',           name: 'Strike',          type: 'attack', cost: 1, baseDamage: 6,                                                               desc: 'Deal 6 damage.' },
-  quickStab: { key: 'quickStab',        name: 'Quick Stab',      type: 'attack', cost: 1, baseDamage: 4,                          drawOnPlay: 1,                       price: 25, desc: 'Deal 4 damage. Draw 1 card.' },
-  comboStrike: { key: 'comboStrike',      name: 'Combo Strike',    type: 'attack', cost: 1, baseDamage: 4,           comboBonus: 3,                                      price: 40, desc: 'Deal 4 damage (+3 per attack hit this turn).' },
-  twinBlades: { key: 'twinBlades',       name: 'Twin Blades',     type: 'attack', cost: 2, baseDamage: 8,  hits: 2,                                                     price: 45, desc: 'Deal 8 damage, 2 times.' },
-  heavyStrike: { key: 'heavyStrike',      name: 'Heavy Strike',    type: 'attack', cost: 3, baseDamage: 30,                                                              price: 70, desc: 'Deal 30 damage.' },
-  thousandCuts: { key: 'thousandCuts',     name: 'Thousand Cuts',   type: 'attack', cost: 2, baseDamage: 2,  hits: 5,                                                     price: 45, desc: 'Deal 2 damage, 5 times.' },
+  strike: { key: 'strike',            name: 'Strike',          type: 'attack', cost: 1, baseDamage: 6,                                                               desc: 'Deal {baseDamage} damage.' },
+  quickStab: { key: 'quickStab',        name: 'Quick Stab',      type: 'attack', cost: 1, baseDamage: 4,                          drawOnPlay: 1,                       price: 25, desc: 'Deal {baseDamage} damage. Draw {drawOnPlay} card.' },
+  comboStrike: { key: 'comboStrike',      name: 'Combo Strike',    type: 'attack', cost: 1, baseDamage: 4,           comboBonus: 3,                                      price: 40, desc: 'Deal {baseDamage} damage (+{comboBonus} per attack hit this turn).' },
+  twinBlades: { key: 'twinBlades',       name: 'Twin Blades',     type: 'attack', cost: 2, baseDamage: 8,  hits: 2,                                                     price: 45, desc: 'Deal {baseDamage} damage, {hits} times.' },
+  heavyStrike: { key: 'heavyStrike',      name: 'Heavy Strike',    type: 'attack', cost: 3, baseDamage: 30,                                                              price: 70, desc: 'Deal {baseDamage} damage.' },
+  thousandCuts: { key: 'thousandCuts',     name: 'Thousand Cuts',   type: 'attack', cost: 2, baseDamage: 2,  hits: 5,                                                     price: 45, desc: 'Deal {baseDamage} damage, {hits} times.' },
 
   // Shares deferredAttack/combo-counting mechanics with the High Roller loot cards
   // (see the comment above rollTheBones in the LOOT group) even though this one is a
-  // straight attack card, not a gold-cost gamble.
-  glassCannon: { key: 'glassCannon',      name: 'Glass Cannon',    type: 'attack', cost: 0, baseDamage: 30,                                        deferredAttack: true, price: 50, desc: 'Roll a die: 4+ deals 30 damage, else this card is destroyed.',
+  // straight attack card, not a gold-cost gamble. The miss threshold lives in the
+  // `rollHit` field (read by onPlay), so tuning it updates the desc automatically.
+  glassCannon: { key: 'glassCannon',      name: 'Glass Cannon',    type: 'attack', cost: 0, baseDamage: 30, rollHit: 4,                            deferredAttack: true, price: 50, desc: 'Roll a die: {rollHit}+ deals {baseDamage} damage, else this card is destroyed.',
     onPlay(card) {
       const combatId = game.combat.combatId;
       rollDie(6, (roll) => {
         if (game.combat.combatId !== combatId) return; // stale callback, combat replaced
-        if (roll >= 4) {
+        if (roll >= card.rollHit) {
           const { damage, mult } = resolveAttackHit(gambleBaseDamage(card.baseDamage));
           logMsg(`Glass Cannon: rolled ${roll}, hit for ${damage} damage.`);
           if (mult > 1.001) showComboPopup(`ATK x${mult.toFixed(2)}!`);
@@ -65,28 +54,23 @@ const CARD_LIBRARY = {
   // Ambush: rewards playing it as your FIRST attack this turn.
   // Base 4 damage, but if turnAttackCount is 0 (no attacks yet), deals +10 and gains 1 Energy.
   // Strong opener, falls off if you combo into it. Cost 1 keeps it accessible.
-  ambush: { key: 'ambush', name: 'Ambush', type: 'attack', cost: 1, baseDamage: 4, price: 35, firstStrike: 10, firstStrikeEnergy: 1, desc: 'Deal 4 damage. If this is your first attack this turn, deal +10 damage and gain 1 Energy.' },
+  ambush: { key: 'ambush', name: 'Ambush', type: 'attack', cost: 1, baseDamage: 4, price: 35, firstStrike: 10, firstStrikeEnergy: 1, desc: 'Deal {baseDamage} damage. If this is your first attack this turn, deal +{firstStrike} damage and gain {firstStrikeEnergy} Energy.' },
 
   // ==================== BLOCK ====================
   // Block mirrors attack: turnBlockCount ticks once per hit, so `hits` buys triggers here
   // the same way it does on the attack side, and blockComboBonus is the block twin of
   // comboBonus. Remember block does not carry over -- c.block is wiped every endTurn --
   // so everything here is single-turn value.
-  guard: { key: 'guard',            name: 'Guard',           type: 'block',  cost: 1, block: 5,                                                                                                   desc: 'Gain 5 block.' },
-  shieldWall: { key: 'shieldWall',       name: 'Shield Wall',     type: 'block',  cost: 2, block: 14,                                                                                                  price: 30, desc: 'Gain 14 block.' },
-  armor: { key: 'armor',            name: 'Armor',           type: 'block',  cost: 3, block: 24,                                                                                                  price: 40, desc: 'Gain 24 block.' },
-  brace: { key: 'brace',            name: 'Brace',           type: 'block',  cost: 0, block: 2,                                                                                                   price: 25, desc: 'Gain 2 block.' },
-  bulwark: { key: 'bulwark',          name: 'Bulwark',         type: 'block',  cost: 2, block: 3,  hits: 4,                                                                                         price: 50, desc: 'Gain 3 block, 4 times.' },
-  stonewall: { key: 'stonewall',        name: 'Stonewall',       type: 'block',  cost: 1, block: 4,           blockComboBonus: 4,                                                                     price: 40, desc: 'Gain 4 block (+4 per block hit this turn).' },
-  shieldBash: { key: 'shieldBash',       name: 'Shield Bash',     type: 'block',  cost: 2, block: 8,                               damageFromBlockPercent: 1.0,                     isAttackToo: true, price: 55, desc: 'Gain 8 block, then deal damage equal to your block.' },
-  brambleGuard: { key: 'brambleGuard',     name: 'Bramble Guard',   type: 'block',  cost: 2, block: 10,                                                           retaliateDamage: 5,                    price: 50, desc: 'Gain 10 block. Retaliate for 5 damage when attacked this combat.',
+  guard: { key: 'guard',              name: 'Guard',           type: 'block',  cost: 1, block: 5,                                                                                                   desc: 'Gain {block} block.' },
+  shieldWall: { key: 'shieldWall',       name: 'Shield Wall',     type: 'block',  cost: 2, block: 14,                                                                                                  price: 30, desc: 'Gain {block} block.' },
+  armor: { key: 'armor',            name: 'Armor',           type: 'block',  cost: 3, block: 24,                                                                                                  price: 40, desc: 'Gain {block} block.' },
+  brace: { key: 'brace',            name: 'Brace',           type: 'block',  cost: 0, block: 2,                                                                                                   price: 25, desc: 'Gain {block} block.' },
+  bulwark: { key: 'bulwark',          name: 'Bulwark',         type: 'block',  cost: 2, block: 3,  hits: 4,                                                                                         price: 50, desc: 'Gain {block} block, {hits} times.' },
+  stonewall: { key: 'stonewall',        name: 'Stonewall',       type: 'block',  cost: 1, block: 4,           blockComboBonus: 4,                                                                     price: 40, desc: 'Gain {block} block (+{blockComboBonus} per block hit this turn).' },
+  shieldBash: { key: 'shieldBash',       name: 'Shield Bash',     type: 'block',  cost: 2, block: 8,                               damageFromBlockPercent: 1.0,                     isAttackToo: true, price: 55, desc: 'Gain {block} block, then deal damage equal to your block.' },
+  brambleGuard: { key: 'brambleGuard',     name: 'Bramble Guard',   type: 'block',  cost: 2, block: 10,                                                           retaliateDamage: 5,                    price: 50, desc: 'Gain {block} block. Retaliate for {retaliateDamage} damage when attacked this combat.',
     onPlay(card) {
-      // Combat-scoped, unlike the old turn-scoped Spiked Armor: it survives
-      // clearTurnStatuses() and keeps retaliating every turn until startCombat() replaces
-      // the combat object. Each copy registers its own listener, so copies stack. The
-      // damage goes straight to the first living boss -- it resolves on the BOSS's turn,
-      // so it must not touch turnAttackCount or the player's combo.
-      addStatus('playerAttacked', 'combat', () => {
+      addStatus('playerAttacked', () => {
         const c = game.combat;
         const target = c.bosses.find(b => b.hp > 0);
         if (target) target.hp = Math.max(0, target.hp - card.retaliateDamage);
@@ -100,9 +84,9 @@ const CARD_LIBRARY = {
   // the current fight for buying power at the next market. Every gain routes through
   // gainGold() so the Gold Loot trinket applies -- note that gainGold rounds, so small
   // per-tick amounts (Skim at 1-2, Kickback at 3) can round the bonus away.
-  treasureGrab: { key: 'treasureGrab',     name: 'Treasure Grab',   type: 'loot',   cost: 1, gold: 4,                                                                                                                      desc: 'Gain 4 gold.' },
-  shakedown: { key: 'shakedown',        name: 'Shakedown',       type: 'loot',   cost: 1, gold: 5,                                                                                                                      price: 30, desc: 'Gain 5 gold.' },
-  skim: { key: 'skim',             name: 'Skim',            type: 'loot',   cost: 0,                        goldPerAttack: 1,                                                                                      price: 35, desc: 'Gain 1 gold per attack hit this turn.',
+  treasureGrab: { key: 'treasureGrab',     name: 'Treasure Grab',   type: 'loot',   cost: 1, gold: 4,                                                                                                                      desc: 'Gain {gold} gold.' },
+  shakedown: { key: 'shakedown',        name: 'Shakedown',       type: 'loot',   cost: 1, gold: 5,                                                                                                                      price: 30, desc: 'Gain {gold} gold.' },
+  skim: { key: 'skim',             name: 'Skim',            type: 'loot',   cost: 0,                        goldPerAttack: 1,                                                                                      price: 35, desc: 'Gain {goldPerAttack} gold per attack hit this turn.',
     onPlay(card) {
       const n = game.combat.turnAttackCount;
       if (n <= 0) {
@@ -113,31 +97,30 @@ const CARD_LIBRARY = {
       logMsg(`Skim: ${n} attack(s) this turn, gained ${g} gold.`);
     },
   },
-  crackTheVault: { key: 'crackTheVault',    name: 'Crack the Vault', type: 'loot',   cost: 3, gold: 15,                                                                                                                     price: 45, desc: 'Gain 15 gold.' },
-  protectionRacket: { key: 'protectionRacket', name: 'Kickback',        type: 'loot',   cost: 1,                                          goldPerTurn: 3,                                                                      price: 50, desc: 'Gain 3 gold at the start of each turn, starting next turn.',
+  crackTheVault: { key: 'crackTheVault',    name: 'Crack the Vault', type: 'loot',   cost: 3, gold: 15,                                                                                                                     price: 45, desc: 'Gain {gold} gold.' },
+  protectionRacket: { key: 'protectionRacket', name: 'Kickback',        type: 'loot',   cost: 1,                                          goldPerTurn: 3,                                                                      price: 50, desc: 'Gain {goldPerTurn} gold at the start of each turn, starting next turn.',
     onPlay(card) {
-      // Combat-scoped, so it survives clearTurnStatuses() and keeps paying every turn until
-      // startCombat() replaces the whole combat object at the next fight. Each copy played
-      // registers its own listener, so copies stack -- exactly how Sore Loser behaved.
-      addStatus('turnStart', 'combat', () => {
+      // Statuses live until startCombat() replaces the whole combat object at the next
+      // fight, so this keeps paying every turn for the rest of the fight. Each copy played
+      // registers its own listener, so copies stack.
+      addStatus('turnStart', () => {
         const g = gainGold(card.goldPerTurn);
         logMsg(`Kickback: collected ${g} gold.`);
       });
       logMsg('Kickback: the arrangement starts paying next turn.');
     },
   },
-  bloodMoney: { key: 'bloodMoney',       name: 'Blood Money',     type: 'loot',   cost: 0, gold: 8,                                                 selfDamage: 5,                                                       price: 35, desc: 'Lose 5 HP. Gain 8 gold.' },
+  bloodMoney: { key: 'bloodMoney',       name: 'Blood Money',     type: 'loot',   cost: 0, gold: 8,                                                 selfDamage: 5,                                                       price: 35, desc: 'Lose {selfDamage} HP. Gain {gold} gold.' },
 
-  // The deck's answer to its own gamble cards. Registers the first real listener for the
-  // `cardMissed` event, which until now fired from trashCard and resolveGoldCardOutcome
-  // with nothing listening (DORMANT.md §1). Glass Cannon rolling 1-3 and Double Up landing
-  // tails both report here, so a whiff stops being dead value and turns into resources --
+  // The deck's answer to its own gamble cards. Registers a listener for the `cardMissed`
+  // event, fired by trashCard (Glass Cannon 1-3) and resolveGoldCardOutcome (Double Up
+  // tails): a whiff stops being dead value and turns into resources --
   // which also makes it a reason to keep pitching the coin when the smart play is to pass.
-  // Combat-scoped like Kickback and Bramble Guard, so it keeps paying for the rest of the
-  // fight, and each copy registers its own listener, so copies stack.
-  hedge: { key: 'hedge',            name: 'Hedge',           type: 'loot',   cost: 1,                                          goldPerMiss: 4,                  blockPerMiss: 3,                                                                price: 50, desc: 'Whenever one of your cards misses this combat, gain 4 gold and 3 block.',
+  // The listener lives until startCombat() replaces the combat object, and each copy
+  // registers its own listener, so copies stack.
+  hedge: { key: 'hedge',            name: 'Hedge',           type: 'loot',   cost: 1,                                          goldPerMiss: 4,                  blockPerMiss: 3,                                                                price: 50, desc: 'Whenever one of your cards misses this combat, gain {goldPerMiss} gold and {blockPerMiss} block.',
     onPlay(card) {
-      addStatus('cardMissed', 'combat', () => {
+      addStatus('cardMissed', () => {
         const c = game.combat;
         const g = gainGold(card.goldPerMiss);
         // Straight onto c.block, not through resolveBlockGain: a miss is not a block
@@ -152,7 +135,7 @@ const CARD_LIBRARY = {
   // Both gamble cards below are free to acquire (price: 0) and free in energy (cost: 0),
   // and charge gold per play (goldCost) instead. All the tunable numbers live on the card
   // defs: goldCost is the per-play price, damagePerPip / winDamage are the payouts. Change
-  // them here; the desc strings restate the same numbers and must be kept in sync by hand.
+  // them here; the desc strings are generated from the same fields and can't drift.
   //
   // Both COUNT FOR COMBO: the roll/flip decides the base damage and resolveAttackHit
   // scales it, so they increment turnAttackCount and take the multiplier exactly like any
@@ -162,7 +145,7 @@ const CARD_LIBRARY = {
   // animation settles. It is redundant while their type is 'loot' (playCard's automatic
   // attack branch only fires for 'attack' / isAttackToo), but it stops them double-dipping
   // if that type is ever changed. Glass Cannon (ATTACK group) shares this same mechanic.
-  rollTheBones: { key: 'rollTheBones',     name: 'Bones',           type: 'loot',   cost: 0,           goldCost: 5,                                                  damagePerPip: 2,                deferredAttack: true, price: 0, desc: 'Pay 5 gold. Roll a die: deal 2x the roll in damage.',
+  rollTheBones: { key: 'rollTheBones',     name: 'Bones',           type: 'loot',   cost: 0,           goldCost: 5,                                                  damagePerPip: 2,                deferredAttack: true, price: 0, desc: 'Pay {goldCost} gold. Roll a die: deal {damagePerPip}x the roll in damage.',
     onPlay(card) {
       const combatId = game.combat.combatId;
       rollDie(6, (roll) => {
@@ -175,7 +158,7 @@ const CARD_LIBRARY = {
       });
     },
   },
-  doubleOrNothing: { key: 'doubleOrNothing',  name: 'Double Up',       type: 'loot',   cost: 0,           goldCost: 5,                                                                   winDamage: 15, deferredAttack: true, price: 0, desc: 'Pay 5 gold. Coin flip: heads deals 15 damage, tails nothing.',
+  doubleOrNothing: { key: 'doubleOrNothing',  name: 'Double Up',       type: 'loot',   cost: 0,           goldCost: 5,                                                                   winDamage: 15, deferredAttack: true, price: 0, desc: 'Pay {goldCost} gold. Coin flip: heads deals {winDamage} damage, tails nothing.',
     onPlay(card) {
       const combatId = game.combat.combatId;
       flipCoin((heads) => {
@@ -186,8 +169,8 @@ const CARD_LIBRARY = {
           if (mult > 1.001) showComboPopup(`ATK x${mult.toFixed(2)}!`);
         } else {
           // Tails matches Glass Cannon's miss: resolveAttackHit is never called, so no
-          // damage, no turnDamageDealt, and no turnAttackCount increment -- a whiff must
-          // not inflate the combo for cards played after it.
+          // damage and no turnAttackCount increment -- a whiff must not inflate the combo
+          // for cards played after it.
           logMsg('Double Up: tails. Nothing happens.');
         }
         resolveGoldCardOutcome(card, heads);
@@ -198,12 +181,12 @@ const CARD_LIBRARY = {
   },
 
   // ==================== SKILL ====================
-  sidestep: { key: 'sidestep',         name: 'Sidestep',        type: 'skill',  cost: 0, block: 2,                drawOnPlay: 2,                                      price: 45, desc: 'Gain 2 block. Draw 2 cards.' },
-  gather: { key: 'gather',           name: 'Gather',          type: 'skill',  cost: 0,                          drawOnPlay: 3,                                      price: 25, desc: 'Draw 3 cards.' },
-  overdraw: { key: 'overdraw',         name: 'Overdraw',        type: 'skill',  cost: 0,                          drawOnPlay: 4, discardCost: 2, drawFirst: true,               price: 40, desc: 'Draw 4 cards. Discard 2 cards.' },
-  spark: { key: 'spark',            name: 'Spark',           type: 'skill',  cost: 0,           energyGain: 1,                                                     price: 30, desc: 'Gain 1 energy.' },
-  overcharge: { key: 'overcharge',       name: 'Overcharge',      type: 'skill',  cost: 0,           energyGain: 1,                discardCost: 1,                      price: 45, desc: 'Discard 1 card. Gain 1 energy.' },
-  burnout: { key: 'burnout',          name: 'Burnout',         type: 'skill',  cost: 0,           energyGain: 3, drawOnPlay: 3,                 exhaustOnPlay: true, price: 50, desc: 'Gain 3 energy. Draw 3 cards. Exhausts after use.' },
+  sidestep: { key: 'sidestep',         name: 'Sidestep',        type: 'skill',  cost: 0, block: 2,                drawOnPlay: 2,                                      price: 45, desc: 'Gain {block} block. Draw {drawOnPlay} cards.' },
+  gather: { key: 'gather',           name: 'Gather',          type: 'skill',  cost: 0,                          drawOnPlay: 3,                                      price: 25, desc: 'Draw {drawOnPlay} cards.' },
+  overdraw: { key: 'overdraw',         name: 'Overdraw',        type: 'skill',  cost: 0,                          drawOnPlay: 4, discardCost: 2, drawFirst: true,               price: 40, desc: 'Draw {drawOnPlay} cards. Discard {discardCost} cards.' },
+  spark: { key: 'spark',            name: 'Spark',           type: 'skill',  cost: 0,           energyGain: 1,                                                     price: 30, desc: 'Gain {energyGain} energy.' },
+  overcharge: { key: 'overcharge',       name: 'Overcharge',      type: 'skill',  cost: 0,           energyGain: 1,                discardCost: 1,                      price: 45, desc: 'Discard {discardCost} card. Gain {energyGain} energy.' },
+  burnout: { key: 'burnout',          name: 'Burnout',         type: 'skill',  cost: 0,           energyGain: 3, drawOnPlay: 3,                 exhaustOnPlay: true, price: 50, desc: 'Gain {energyGain} energy. Draw {drawOnPlay} cards. Exhausts after use.' },
 
   // Named "Loaded Dice" like the trinket, but a different thing (a played card, not a
   // passive) -- distinct key so the two don't collide, flagged to the user as a naming
@@ -219,46 +202,46 @@ const CARD_LIBRARY = {
 // otherwise it could hide behind its own "+1 shop slot" effect and never be reachable.
 // effectAmount is read by apply() via `this` (each apply is always called as
 // `offer.apply(game)`, a method call, so `this` is the trinket object) rather than being
-// a literal in the function body -- that's what lets the dev tuning panel edit a
-// trinket's per-stack effect without touching a function's source text. Editing
-// effectAmount does NOT update the desc string below it, which still prints the
-// original number; see the tuning panel's known-limitations note.
+// a literal in the function body.
+// desc strings are templates (see cardDescText): {effectAmount} prints the trinket's
+// per-stack effect, so tuning a number updates both the effect and its printed text from
+// one edit. Percent-style trinkets use {effectAmount:x100} so 0.10 prints as "10%".
 const TRINKET_LIBRARY = {
-  shopSize:      { key: 'shopSize',      name: 'Shop Size',      price: 45, effectAmount: 1,    desc: '+1 card & trinket slot in the market.', apply(game) { game.shopSizeBonus += this.effectAmount; } },
-  maxHp:         { key: 'maxHp',         name: 'Max HP',         price: 35, effectAmount: 10,   desc: '+10 Max HP.',                          apply(game) { game.maxHp += this.effectAmount; game.hp += this.effectAmount; } },
-  handSize:      { key: 'handSize',      name: 'Hand Size',      price: 50, effectAmount: 1,    desc: '+1 card drawn per turn.',               apply(game) { game.handSizeBonus += this.effectAmount; } },
-  goldLoot:      { key: 'goldLoot',      name: 'Gold Loot',      price: 35, effectAmount: 0.10, desc: '+10% gold gained.',                    apply(game) { game.goldLootBonus += this.effectAmount; } },
-  shopDiscount:  { key: 'shopDiscount',  name: 'Shop Discount',  price: 35, effectAmount: 0.10, desc: '-10% market prices.',                  apply(game) { game.shopDiscount += this.effectAmount; } },
-  luckyCoin:     { key: 'luckyCoin',     name: 'Lucky Coin',     price: 45, effectAmount: 0.15, desc: '+15% damage on rolls and flips.',      apply(game) { game.gambleBonus += this.effectAmount; } },
-  bloodVial:     { key: 'bloodVial',     name: 'Blood Vial',     price: 35, effectAmount: 5,    desc: 'Heal 5 HP after each boss.',            apply(game) { game.healAfterKill += this.effectAmount; } },
+  shopSize:      { key: 'shopSize',      name: 'Shop Size',      price: 45, effectAmount: 1,    desc: '+{effectAmount} card & trinket slot in the market.', apply(game) { game.shopSizeBonus += this.effectAmount; } },
+  maxHp:         { key: 'maxHp',         name: 'Max HP',         price: 35, effectAmount: 10,   desc: '+{effectAmount} Max HP.',                          apply(game) { game.maxHp += this.effectAmount; game.hp += this.effectAmount; } },
+  handSize:      { key: 'handSize',      name: 'Hand Size',      price: 50, effectAmount: 1,    desc: '+{effectAmount} card drawn per turn.',               apply(game) { game.handSizeBonus += this.effectAmount; } },
+  goldLoot:      { key: 'goldLoot',      name: 'Gold Loot',      price: 35, effectAmount: 0.10, desc: '+{effectAmount:x100}% gold gained.',                    apply(game) { game.goldLootBonus += this.effectAmount; } },
+  shopDiscount:  { key: 'shopDiscount',  name: 'Shop Discount',  price: 35, effectAmount: 0.10, desc: '-{effectAmount:x100}% market prices.',                  apply(game) { game.shopDiscount += this.effectAmount; } },
+  luckyCoin:     { key: 'luckyCoin',     name: 'Lucky Coin',     price: 45, effectAmount: 0.15, desc: '+{effectAmount:x100}% damage on rolls and flips.',      apply(game) { game.gambleBonus += this.effectAmount; } },
+  bloodVial:     { key: 'bloodVial',     name: 'Blood Vial',     price: 35, effectAmount: 5,    desc: 'Heal {effectAmount} HP after each boss.',            apply(game) { game.healAfterKill += this.effectAmount; } },
 
   // --- NEW TRINKETS -----------------------------------------------------------
   // +1 energy per turn. The most impactful resource buff in the game; costs 60g
   // and stacks per purchase. Reads in startCombat (initial energy) and endTurn
   // (energy per turn).
-  energyCore:    { key: 'energyCore',    name: 'Energy Core',    price: 60, effectAmount: 1,    desc: '+1 energy per turn.',                  apply(game) { game.energyBonus += this.effectAmount; } },
+  energyCore:    { key: 'energyCore',    name: 'Energy Core',    price: 60, effectAmount: 1,    desc: '+{effectAmount} energy per turn.',                  apply(game) { game.energyBonus += this.effectAmount; } },
 
   // +0.1 combo step. Multiplies the value of every combo card. Stacks additively:
   // 0.2 -> 0.3 -> 0.4 ... Scales every combo card in the deck. Costs 50g.
-  comboMaster:   { key: 'comboMaster',   name: 'Combo Master',   price: 50, effectAmount: 0.1,  desc: '+0.1 combo step.',                    apply(game) { game.comboStepBonus += this.effectAmount; } },
+  comboMaster:   { key: 'comboMaster',   name: 'Combo Master',   price: 50, effectAmount: 0.1,  desc: '+{effectAmount} combo step.',                    apply(game) { game.comboStepBonus += this.effectAmount; } },
 
   // +2 base damage on EVERY attack hit. Flat, honest, stacks linearly. Makes
   // starter Strikes relevant late and feeds combo engines. Needs a new
   // game.attackBonus read in resolveAttackHit (added).
-  whetstone:     { key: 'whetstone',     name: 'Whetstone',      price: 40, effectAmount: 2,    desc: '+2 base damage on every attack.',      apply(game) { game.attackBonus += this.effectAmount; } },
+  whetstone:     { key: 'whetstone',     name: 'Whetstone',      price: 40, effectAmount: 2,    desc: '+{effectAmount} base damage on every attack.',      apply(game) { game.attackBonus += this.effectAmount; } },
 
   // +2 base block on EVERY block hit. Mirror of Whetstone. Pairs obscenely
   // with Shield Bash (damage = block). Needs game.blockBonus in
   // resolveBlockGain (added).
-  ironwoodCharm: { key: 'ironwoodCharm', name: 'Ironwood Charm',  price: 40, effectAmount: 2,    desc: '+2 base block on every block.',        apply(game) { game.blockBonus += this.effectAmount; } },
+  ironwoodCharm: { key: 'ironwoodCharm', name: 'Ironwood Charm',  price: 40, effectAmount: 2,    desc: '+{effectAmount} base block on every block.',        apply(game) { game.blockBonus += this.effectAmount; } },
 
   // +8 gold every market visit. Pure economy, no combat hook. Payout in
   // openMarket before rendering.
-  coinPurse:     { key: 'coinPurse',     name: 'Coin Purse',     price: 30, effectAmount: 8,    desc: '+8 gold every market visit.',          apply(game) { game.marketGold += this.effectAmount; } },
+  coinPurse:     { key: 'coinPurse',     name: 'Coin Purse',     price: 30, effectAmount: 8,    desc: '+{effectAmount} gold every market visit.',          apply(game) { game.marketGold += this.effectAmount; } },
 
   // +10 HP on Rest & Heal. Makes the heal service scale into late run
   // instead of falling behind Lich/Void Herald damage.
-  fieldMedic:    { key: 'fieldMedic',    name: 'Field Medic',    price: 35, effectAmount: 10,   desc: '+10 HP on Rest & Heal.',               apply(game) { game.healBonus += this.effectAmount; } },
+  fieldMedic:    { key: 'fieldMedic',    name: 'Field Medic',    price: 35, effectAmount: 10,   desc: '+{effectAmount} HP on Rest & Heal.',               apply(game) { game.healBonus += this.effectAmount; } },
 
   // Second Wind: once per combat, survive lethal damage at 1 HP.
   // Needs a per-combat flag and a hook in endTurn where boss damage lands.
@@ -303,70 +286,66 @@ const BOSSES = [
 ];
 
 // ---------- Tunable run constants ----------
-// Plain mutable (`let`, not `const`) bindings so the dev tuning panel and a pasted TUNING
-// patch (see the empty `const TUNING = {}` near the top of the file) can both reassign
-// them at runtime -- every other reference to these names elsewhere in the file keeps
-// working unchanged, since a `let` is just as readable from other functions as a `const`.
-let HAND_SIZE = 5;
-let BASE_ENERGY = 3;
-let COMBO_STEP = 0.2;
-let START_HP = 100;
-let START_MAX_HP = 100;
-let START_GOLD = 10;
-let BOSS_REWARD_BASE = 15;       // gainGold(BOSS_REWARD_BASE + BOSS_REWARD_PER_BOSS * bossIndex)
-let BOSS_REWARD_PER_BOSS = 5;
-let HEAL_COST_BASE = 15;         // healCost() = discountedPrice(HEAL_COST_BASE); heal amount itself stays a fixed 15, not tunable
-let REMOVE_COST_BASE = 25;
-let UPGRADE_COST_BASE = 40;      // upgradeCost() = discountedPrice(UPGRADE_COST_BASE); the +4 itself is fixed, like the heal amount
-let REROLL_COST_START = 1;       // game.rerollCost starts here each newRun()
-let REROLL_COST_STEP = 1;        // and climbs by this much every rerollShop()
+const HAND_SIZE = 5;
+const BASE_ENERGY = 3;
+const COMBO_STEP = 0.2;
+const START_HP = 100;
+const START_MAX_HP = 100;
+const START_GOLD = 10;
+const BOSS_REWARD_BASE = 15;       // gainGold(BOSS_REWARD_BASE + BOSS_REWARD_PER_BOSS * bossIndex)
+const BOSS_REWARD_PER_BOSS = 5;
+const HEAL_COST_BASE = 15;         // healCost() = discountedPrice(HEAL_COST_BASE); heal amount itself stays a fixed 15, not tunable
+const REMOVE_COST_BASE = 25;
+const UPGRADE_COST_BASE = 40;      // upgradeCost() = discountedPrice(UPGRADE_COST_BASE); the +4 itself is fixed, like the heal amount
+const REROLL_COST_START = 1;       // game.rerollCost starts here each newRun()
+const REROLL_COST_STEP = 1;        // and climbs by this much every rerollShop()
 
-// Applies a pasted TUNING patch over the card library, boss list, trinket library, and
-// the constants above. Deliberately NOT part of the dev tuning panel block further down
-// this file -- this function (and the TUNING const itself) is meant to keep working even
-// if that whole panel block is stripped out later, so a hand-pasted patch stays a
-// one-line, reversible change independent of the interactive tool.
-function applyTuningPatch() {
-  // Card patches are top-level keys in TUNING (e.g. `{ twinBlades: { baseDamage: 9 } }`),
-  // matching the shape the tuning panel exports -- 'bosses', 'constants' and 'trinkets'
-  // are the only reserved top-level names, so every other key is treated as a card key.
-  const RESERVED_TOP_LEVEL_KEYS = new Set(['bosses', 'constants', 'trinkets']);
-  for (const [key, patch] of Object.entries(TUNING)) {
-    if (RESERVED_TOP_LEVEL_KEYS.has(key)) continue;
-    if (CARD_LIBRARY[key]) Object.assign(CARD_LIBRARY[key], patch);
-  }
-  for (const [idxStr, patch] of Object.entries(TUNING.bosses || {})) {
-    const boss = BOSSES[Number(idxStr)];
-    if (!boss) continue;
-    if (patch.maxHp != null) boss.maxHp = patch.maxHp;
-    if (patch.pattern) boss.pattern = patch.pattern.slice();
-  }
-  for (const [key, patch] of Object.entries(TUNING.trinkets || {})) {
-    if (TRINKET_LIBRARY[key]) Object.assign(TRINKET_LIBRARY[key], patch);
-  }
-  const c = TUNING.constants || {};
-  if (c.HAND_SIZE != null) HAND_SIZE = c.HAND_SIZE;
-  if (c.BASE_ENERGY != null) BASE_ENERGY = c.BASE_ENERGY;
-  if (c.COMBO_STEP != null) COMBO_STEP = c.COMBO_STEP;
-  if (c.START_HP != null) START_HP = c.START_HP;
-  if (c.START_MAX_HP != null) START_MAX_HP = c.START_MAX_HP;
-  if (c.START_GOLD != null) START_GOLD = c.START_GOLD;
-  if (c.BOSS_REWARD_BASE != null) BOSS_REWARD_BASE = c.BOSS_REWARD_BASE;
-  if (c.BOSS_REWARD_PER_BOSS != null) BOSS_REWARD_PER_BOSS = c.BOSS_REWARD_PER_BOSS;
-  if (c.HEAL_COST_BASE != null) HEAL_COST_BASE = c.HEAL_COST_BASE;
-  if (c.REMOVE_COST_BASE != null) REMOVE_COST_BASE = c.REMOVE_COST_BASE;
-  if (c.UPGRADE_COST_BASE != null) UPGRADE_COST_BASE = c.UPGRADE_COST_BASE;
-  if (c.REROLL_COST_START != null) REROLL_COST_START = c.REROLL_COST_START;
-  if (c.REROLL_COST_STEP != null) REROLL_COST_STEP = c.REROLL_COST_STEP;
+// ---------- Seeded randomness ----------
+// One seeded PRNG (mulberry32) drives ALL gameplay randomness -- deck shuffles, die
+// rolls, coin flips, market offers -- and its seed is fixed when a run starts. Same seed
+// + same decisions = identical run, so a bug or a lucky streak can be shared and
+// replayed with ?seed=N in the address bar (the run's seed is printed to the combat log
+// at the start of every fight... once per run, actually: newRun logs it).
+// Purely cosmetic randomness (the faces the die/coin flickers through while spinning)
+// uses raw Math.random and does not touch this stream.
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
-applyTuningPatch();
+
+// Seed for the next run: a ?seed=N query parameter wins (replay / share a specific run),
+// otherwise something effectively unique in the session.
+function pickSeed() {
+  if (typeof location !== 'undefined' && location.search) {
+    const m = /[?&]seed=(\d{1,10})/.exec(location.search);
+    if (m) return Number(m[1]);
+  }
+  return (Date.now() ^ Math.floor(Math.random() * 0xFFFFFFFF)) >>> 0;
+}
+
+// The gameplay random source. Replaced with the seeded generator at newRun(); stays
+// Math.random before that (and if anything ever runs before a run starts).
+let rand = Math.random;
 
 // ---------- Game state ----------
 let game = null;
 let uidCounter = 0;
 
-function newRun() {
+function newRun(requestedSeed) {
+  // Only accept an actual number: button onclick handlers invoke newRun with a click
+  // event as the argument, which must fall through to pickSeed() rather than become
+  // (event >>> 0) -- a meaningless garbage seed.
+  const seed = typeof requestedSeed === 'number' && Number.isFinite(requestedSeed)
+    ? requestedSeed >>> 0
+    : pickSeed();
+  rand = mulberry32(seed);
   game = {
+    seed,
     hp: START_HP,
     maxHp: START_MAX_HP,
     gold: START_GOLD,
@@ -395,6 +374,7 @@ function newRun() {
     combat: null,
   };
   startCombat();
+  logMsg(`Run seed: ${game.seed} (replay with ?seed=${game.seed})`);
 }
 
 function instantiateCard(key) {
@@ -405,7 +385,7 @@ function instantiateCard(key) {
 function shuffle(arr) {
   const a = arr.slice();
   for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
+    const j = Math.floor(rand() * (i + 1));
     [a[i], a[j]] = [a[j], a[i]];
   }
   return a;
@@ -456,10 +436,9 @@ function startCombat() {
     energy: energyThisTurn,
     turnAttackCount: 0,
     turnBlockCount: 0,
-    turnDamageDealt: 0,
     discardSelection: null,
     exhaustPile: [],
-    statuses: [],       // { on: 'turnStart' | 'playerAttacked' | 'cardMissed', scope: 'turn' | 'combat', effect() }
+    statuses: [],       // { on: 'turnStart' | 'playerAttacked' | 'cardMissed', effect() } -- see addStatus
     forcedNextRoll: null, // 'max' consumed by the next rollDie/flipCoin call
     rolling: false,     // true for the ~1s a die/coin is spinning -- blocks playing cards and ending the turn
     ended: false,       // set once by checkCombatEnd -- makes a second call for this fight a no-op
@@ -504,19 +483,14 @@ function logMsg(msg) {
 // ---------- Playing cards ----------
 // COMBO_STEP is declared with the other tunable run constants, above.
 
-// What your next attack's combo multiplier would be, without playing anything --
-// used by cards like Adrenaline that check the current combo state.
-function currentAttackMult() {
-  const n = game.combat.turnAttackCount;
-  return n <= 0 ? 1 : 1 + COMBO_STEP * (n - 1);
-}
-
-// ---------- Status effects (Protection Racket's per-turn payout, etc.) ----------
-// A tiny pub/sub: cards register a status with an event name and a scope, and fireEvent
-// calls every status listening for that event. 'turn' statuses are cleared at end of turn;
-// 'combat' statuses live until the combat object is replaced (i.e. the whole fight ends).
-function addStatus(on, scope, effect) {
-  game.combat.statuses.push({ on, scope, effect });
+// ---------- Status effects (Kickback's per-turn payout, Bramble Guard's retaliation, etc.) --
+// A tiny pub/sub: cards register a status with an `addStatus(eventName, effect)`, and
+// fireEvent calls every status listening for that event. Statuses live until
+// startCombat() replaces the combat object, i.e. the whole rest of the current fight --
+// which matches Kickback ("starting next turn"), Bramble Guard and Hedge, the three
+// subscribers. Each copy of a card registers its own listener, so copies stack.
+function addStatus(on, effect) {
+  game.combat.statuses.push({ on, effect });
 }
 
 function fireEvent(eventName, payload) {
@@ -527,25 +501,10 @@ function fireEvent(eventName, payload) {
   }
 }
 
-function clearTurnStatuses() {
-  const c = game.combat;
-  c.statuses = c.statuses.filter(s => s.scope !== 'turn');
-}
-
-function discardRandomCards(n) {
-  const c = game.combat;
-  for (let i = 0; i < n && c.hand.length > 0; i++) {
-    const idx = Math.floor(Math.random() * c.hand.length);
-    const [discarded] = c.hand.splice(idx, 1);
-    c.discardPile.push(discarded);
-    logMsg(`Discarded ${discarded.name}.`);
-  }
-}
-
 // Trashes a card out of the run for good -- for Glass Cannon's missed roll. Removing it
 // from game.deck alone is not enough: the card was already pushed into a combat zone by
 // playCard, so it has to come out of every zone too, or it gets reshuffled and replayed
-// for the rest of the fight. Also counts as a "miss" for Sore Loser-style passives.
+// for the rest of the fight. Also counts as a "miss" for Hedge-style passives.
 function trashCard(card) {
   if (!game.combat) return; // defensive: never called outside combat, but guard anyway
   const remainingDeck = game.deck.filter(x => x.uid !== card.uid);
@@ -596,7 +555,6 @@ function resolveAttackHit(baseDamage, comboBonus = 0) {
   // Target the first living boss
   const target = c.bosses.find(b => b.hp > 0);
   if (target) target.hp = Math.max(0, target.hp - damage);
-  c.turnDamageDealt += damage;
   return { damage, mult };
 }
 
@@ -615,7 +573,7 @@ function resolveBlockGain(blockAmount, blockComboBonus = 0) {
   return { block, mult };
 }
 
-// Shared "did a gold-cost gamble pay off" handling: notifies Sore Loser-style passives
+// Shared "did a gold-cost gamble pay off" handling: notifies Hedge-style passives
 // on a miss. Kept as its own seam so every gold-card outcome reports through one place.
 function resolveGoldCardOutcome(card, succeeded) {
   if (!succeeded) fireEvent('cardMissed', { card });
@@ -664,7 +622,9 @@ function rollDie(sides, onResult) {
   c.rolling = true;
   const forced = c.forcedNextRoll === 'max';
   if (forced) c.forcedNextRoll = null;
-  const finalValue = forced ? sides : (1 + Math.floor(Math.random() * sides));
+  // The final value is the one seeded draw that matters; the spinning faces below use
+  // raw Math.random so the animation doesn't consume outcome rolls from the run stream.
+  const finalValue = forced ? sides : 1 + Math.floor(rand() * sides);
 
   const resultEl = document.getElementById('dice-result-text');
   resultEl.classList.remove('landed');
@@ -693,7 +653,8 @@ function flipCoin(onResult) {
   c.rolling = true;
   const forced = c.forcedNextRoll === 'max';
   if (forced) c.forcedNextRoll = null;
-  const heads = forced ? true : Math.random() < 0.5;
+  // Same split as rollDie: one seeded draw decides, Math.random drives the spin visual.
+  const heads = forced ? true : rand() < 0.5;
 
   const resultEl = document.getElementById('dice-result-text');
   resultEl.classList.remove('landed');
@@ -720,10 +681,11 @@ function flipCoin(onResult) {
 // render layer call it, so a card the UI greys out is exactly a card playCard refuses.
 // A discardCost is a hard requirement, not a clamped one: the card needs that many OTHER
 // cards in hand to pay with (the card itself is still in hand here, hence length - 1),
+// A discardCost is a hard requirement, not a clamped one: the card needs that many OTHER
+// cards in hand to pay with (the card itself is still in hand here, hence length - 1),
 // otherwise it is unplayable rather than resolving at a reduced cost. For drawFirst
 // cards (Overdraw) this is conservative -- the draw would supply discards on its own --
 // but it guarantees the follow-up selection can always complete, so no softlock.
-// Also accounts for discardRandom which runs before discardCost and can reduce hand size.
 function canPlayCard(card) {
   const c = game.combat;
   // Also refuses while a die/coin is spinning -- a deferred attack's combo trigger isn't
@@ -732,8 +694,7 @@ function canPlayCard(card) {
   if (card.cost > c.energy) return false;
   if (card.goldCost && card.goldCost > game.gold) return false;
   if (card.discardCost) {
-    const randomDiscards = card.discardRandom || 0;
-    const available = c.hand.length - 1 - randomDiscards;
+    const available = c.hand.length - 1;
     if (available < card.discardCost) return false;
   }
   // Self-damage must never be lethal or reduce you to 0 -- Blood Money greys itself out
@@ -816,10 +777,6 @@ function playCard(uid) {
   if (card.gold) {
     const g = gainGold(card.gold);
     logMsg(`${card.name} grants ${g} gold.`);
-  }
-
-  if (card.discardRandom) {
-    discardRandomCards(card.discardRandom);
   }
 
   if (card.discardCost) {
@@ -940,7 +897,6 @@ function endTurn() {
   game.hp = Math.max(0, game.hp - totalDealt);
   attackLogs.forEach(logMsg);
   c.block = 0;
-  clearTurnStatuses();
 
   // Second Wind: survive lethal damage once per combat
   if (game.hp <= 0 && (game.secondWind || 0) > 0 && !c.secondWindUsed) {
@@ -967,7 +923,6 @@ function endTurn() {
   c.energy = BASE_ENERGY + (game.energyBonus || 0);
   c.turnAttackCount = 0;
   c.turnBlockCount = 0;
-  c.turnDamageDealt = 0;
   c.forcedNextRoll = null; // Loaded Dice only promises "this turn"
   drawCards(currentHandSize() - c.hand.length);
   // Fired last, once the new turn is fully built: after the death check above (a dead
@@ -1165,9 +1120,8 @@ function renderRemoveScreen() {
 // Attack/block cards only: +4 to baseDamage and/or block, once per card. Loot/skill
 // cards have no flat number an upgrade could honestly touch (their value lives in
 // onPlay closures and per-turn counters), so they're excluded rather than given a
-// fake +1. The type-line stat and badges read the live fields, so the upgraded
-// numbers show up everywhere automatically; only the static desc string needs help,
-// which cardDescText supplies via the upgrade note below.
+// fake +1. The type-line stat and the generated desc both read the live fields, so
+// upgraded numbers show up everywhere automatically.
 const UPGRADE_BONUS = 4;
 
 function upgradeableCards() {
@@ -1188,11 +1142,12 @@ function renderUpgradeScreen() {
     div.className = `card shop-card ${card.type}`;
     div.innerHTML = cardFaceHTML(card, null);
     div.onclick = () => {
-      const notes = [];
-      if (card.baseDamage != null) { card.baseDamage += UPGRADE_BONUS; notes.push(`+${UPGRADE_BONUS} damage`); }
-      if (card.block != null) { card.block += UPGRADE_BONUS; notes.push(`+${UPGRADE_BONUS} block`); }
+      if (card.baseDamage != null) card.baseDamage += UPGRADE_BONUS;
+      if (card.block != null) card.block += UPGRADE_BONUS;
+      // No note string and no desc rewrite needed: the desc is generated from the live
+      // fields, so +UPGRADE_BONUS is already visible on the face (and the type-line
+      // stat) the moment the numbers change.
       card.upgraded = true;
-      card.upgradeNote = notes.join(' & ');
       card.name += ' +';
       game.gold -= upgradeCost();
       showScreen('screen-market');
@@ -1221,7 +1176,15 @@ function handKeyLabel(index) {
   return null;
 }
 
-document.addEventListener('keydown', (e) => {
+// The wiring below (this listener and the block at the bottom of the file) only runs in
+// a browser: it's wrapped so the SAME file can also be evaluated in Node by the console
+// test suite (tools/engine-tests.js), where there is no document. Everything above the
+// wiring is deliberately DOM-free, so tests load the file once and call the game's
+// functions directly against the same code the browser runs.
+
+const __inBrowser = typeof document !== 'undefined';
+
+if (__inBrowser) document.addEventListener('keydown', (e) => {
   if (!game || !game.combat) return;
   if (!document.getElementById('screen-combat').classList.contains('active')) return;
   // Block all keyboard input while a die/coin is spinning -- prevents Tab+Space
@@ -1259,11 +1222,25 @@ function showScreen(id) {
   document.getElementById(id).classList.add('active');
 }
 
+// ---------- Generated descriptions ----------
+// A desc string is a TEMPLATE: every {field} is replaced with the card's value for that
+// field at render time, so tuning a number in a card/trinket def updates both the effect
+// and the printed text from one edit -- the old hand-written strings simply drifted the
+// moment any number changed.
+// Transforms: {field:x100} prints a fraction as a whole percent (0.1 -> "10"). A
+// placeholder with no matching field renders "MISSING:field" -- loud, so the console
+// test suite (tools/engine-tests.js) can catch it and so a broken desc is visible
+// on the face immediately, not silently stale.
+// Upgrades need no special case: they mutate live fields and the templates read the
+// card, so an upgraded Strike's desc shows the new damage by itself. Works identically
+// for card offers (CARD_LIBRARY copies) and trinket offers (TRINKET_LIBRARY entries).
 function cardDescText(card) {
-  // Upgraded cards keep their original desc (the numbers in it are stale by exactly
-  // UPGRADE_BONUS) with the upgrade appended, so the face stays honest without
-  // rewriting per-card strings at upgrade time.
-  return card.upgraded ? `${card.desc} (${card.upgradeNote} upgraded.)` : card.desc;
+  return String(card.desc).replace(/\{(\w+)(?::(\w+))?\}/g, (all, field, transform) => {
+    const value = card[field];
+    if (value == null) return `MISSING:${field}`;
+    if (transform === 'x100') return `${Math.round(value * 100)}`;
+    return String(value);
+  });
 }
 
 // ---------- Card sprites (pixel art) ----------
@@ -1325,10 +1302,9 @@ function spriteSVG(key,type){
 // in here. That split exists so the art can be reworked without a 130KB file, and
 // so a broken art file can only ever produce a missing portrait, never a broken game.
 //
-// Self-contained, like the dev tuning panel below: nothing outside this block
-// depends on it. To strip the feature entirely, delete THIS WHOLE BLOCK, the whole
-// of boss-art.js, the <script> tag for it in index.html, the #boss-portrait div, and
-// the ".boss-portrait" rules in style.css.
+// Self-contained: nothing outside this block depends on it. To strip the feature entirely,
+// delete THIS WHOLE BLOCK, the whole of boss-art.js, the <script> tag for it in index.html,
+// the #boss-portrait div, and the ".boss-portrait" rules in style.css.
 //
 // Art is pixel-run data on a larger grid than the cards (78x44 vs 32x20), same
 // [col, row, width, height, ink] format. Keyed by boss NAME, not index, so
@@ -1634,10 +1610,12 @@ function renderCombat() {
   document.getElementById('draw-count').textContent = c.drawPile.length;
   document.getElementById('discard-count').textContent = c.discardPile.length;
   // The combo the NEXT card would score at: same formula the preview and the resolvers
-  // share, read at the current counts. Always visible so the multiplier is plannable
-  // instead of something you only discover after committing to a play.
+  // share -- including Combo Master's comboStepBonus, which the resolvers and this
+  // readout both fold in -- read at the current counts. Always visible so the multiplier
+  // is plannable instead of something you only discover after committing to a play.
+  const step = COMBO_STEP + (game.comboStepBonus || 0);
   document.getElementById('combo-text').textContent =
-    `ATK x${(1 + COMBO_STEP * c.turnAttackCount).toFixed(2)} · BLK x${(1 + COMBO_STEP * c.turnBlockCount).toFixed(2)}`;
+    `ATK x${(1 + step * c.turnAttackCount).toFixed(2)} · BLK x${(1 + step * c.turnBlockCount).toFixed(2)}`;
   // Only shown once something has actually been exhausted -- most fights never touch
   // this pile (only Burnout uses exhaustOnPlay today), so it stays out of the way until
   // it's relevant instead of sitting at a confusing permanent "0".
@@ -1770,7 +1748,7 @@ function renderMarket() {
 
     const div = document.createElement('div');
     div.className = 'market-card trinket';
-    div.innerHTML = `<div class="name">${offer.name}${level > 0 ? ` (Lv ${level})` : ''}</div><div class="desc">${offer.desc}</div>`;
+    div.innerHTML = `<div class="name">${offer.name}${level > 0 ? ` (Lv ${level})` : ''}</div><div class="desc">${cardDescText(offer)}</div>`;
 
     const priceEl = document.createElement('div');
     priceEl.className = 'shop-price';
@@ -1788,458 +1766,20 @@ function renderMarket() {
 }
 
 // ---------- Wiring ----------
-document.getElementById('btn-new-run').onclick = newRun;
-document.getElementById('btn-end-turn').onclick = endTurn;
-document.getElementById('btn-continue').onclick = continueFromMarket;
-document.getElementById('btn-reroll').onclick = rerollShop;
-document.getElementById('btn-heal').onclick = doHeal;
-document.getElementById('btn-remove').onclick = openRemoveScreen;
-document.getElementById('btn-upgrade').onclick = openUpgradeScreen;
-document.getElementById('btn-cancel-remove').onclick = () => { showScreen('screen-market'); renderMarket(); };
-document.getElementById('btn-cancel-upgrade').onclick = () => { showScreen('screen-market'); renderMarket(); };
-document.getElementById('btn-restart-lose').onclick = newRun;
-document.getElementById('btn-restart-win').onclick = newRun;
-
-showScreen('screen-start');
-
-// ============================================================================
-// DEV TUNING PANEL -- balance-iteration overlay, backtick (`) toggles it.
-// Not part of the shipped game. Doesn't run anything while closed (event listeners
-// only, no polling/rendering loop) and touches nothing outside this block except by
-// calling already-public functions (renderCombat/renderMarket/renderRemoveScreen) and
-// mutating already-public data (CARD_LIBRARY, BOSSES, TRINKET_LIBRARY, the tunable
-// constants). To strip this tool entirely, delete: this whole block, the #tuning-panel
-// markup in index.html, and the ".tuning-*" rules in style.css.
-// ============================================================================
-
-// The exact numeric fields a card can carry, in the order the panel shows them. Booleans
-// (deferredAttack, isAttackToo, exhaustOnPlay) are flags, not tunable numbers, and are
-// deliberately not in this list -- a card only gets an input for a field it actually has.
-const TUNING_CARD_NUMERIC_FIELDS = [
-  'cost', 'baseDamage', 'hits', 'block', 'blockComboBonus', 'comboBonus', 'gold',
-  'goldCost', 'goldPerAttack', 'goldPerTurn', 'selfDamage', 'energyGain', 'drawOnPlay',
-  'discardCost', 'damagePerPip', 'winDamage', 'retaliateDamage', 'damageFromBlockPercent',
-  'goldPerMiss', 'blockPerMiss',
-  'price',
-];
-
-const TUNING_CONST_NAMES = [
-  'BASE_ENERGY', 'HAND_SIZE', 'COMBO_STEP', 'START_HP', 'START_MAX_HP', 'START_GOLD',
-  'BOSS_REWARD_BASE', 'BOSS_REWARD_PER_BOSS', 'HEAL_COST_BASE', 'REMOVE_COST_BASE',
-  'UPGRADE_COST_BASE', 'REROLL_COST_START', 'REROLL_COST_STEP',
-];
-// Plain `let` bindings can't be handed around as values, so each constant gets a
-// get/set pair here -- this is the seam that lets the panel read and reassign them
-// generically instead of a 12-way if/else repeated in three different places.
-const TUNING_CONST_ACCESSORS = {
-  BASE_ENERGY: { get: () => BASE_ENERGY, set: (v) => { BASE_ENERGY = v; } },
-  HAND_SIZE: { get: () => HAND_SIZE, set: (v) => { HAND_SIZE = v; } },
-  COMBO_STEP: { get: () => COMBO_STEP, set: (v) => { COMBO_STEP = v; } },
-  START_HP: { get: () => START_HP, set: (v) => { START_HP = v; } },
-  START_MAX_HP: { get: () => START_MAX_HP, set: (v) => { START_MAX_HP = v; } },
-  START_GOLD: { get: () => START_GOLD, set: (v) => { START_GOLD = v; } },
-  BOSS_REWARD_BASE: { get: () => BOSS_REWARD_BASE, set: (v) => { BOSS_REWARD_BASE = v; } },
-  BOSS_REWARD_PER_BOSS: { get: () => BOSS_REWARD_PER_BOSS, set: (v) => { BOSS_REWARD_PER_BOSS = v; } },
-  HEAL_COST_BASE: { get: () => HEAL_COST_BASE, set: (v) => { HEAL_COST_BASE = v; } },
-  REMOVE_COST_BASE: { get: () => REMOVE_COST_BASE, set: (v) => { REMOVE_COST_BASE = v; } },
-  UPGRADE_COST_BASE: { get: () => UPGRADE_COST_BASE, set: (v) => { UPGRADE_COST_BASE = v; } },
-  REROLL_COST_START: { get: () => REROLL_COST_START, set: (v) => { REROLL_COST_START = v; } },
-  REROLL_COST_STEP: { get: () => REROLL_COST_STEP, set: (v) => { REROLL_COST_STEP = v; } },
-};
-
-// Snapshot taken once, right now -- after applyTuningPatch() already ran up top, so
-// "the file's values" (what Reset restores to) means the file plus any baked-in TUNING
-// patch, not literally the raw source literals. Everything the panel edits is compared
-// against this to decide what counts as "changed" for the export patch and changelog.
-const TUNING_BASELINE = {
-  cards: Object.fromEntries(Object.entries(CARD_LIBRARY).map(([key, card]) => [
-    key,
-    Object.fromEntries(TUNING_CARD_NUMERIC_FIELDS.filter(f => card[f] !== undefined).map(f => [f, card[f]])),
-  ])),
-  bosses: BOSSES.map(b => ({ maxHp: b.maxHp, pattern: b.pattern.slice() })),
-  trinkets: Object.fromEntries(Object.entries(TRINKET_LIBRARY).map(([key, t]) => [
-    key, { price: t.price, effectAmount: t.effectAmount },
-  ])),
-  constants: Object.fromEntries(TUNING_CONST_NAMES.map(name => [name, TUNING_CONST_ACCESSORS[name].get()])),
-};
-
-// Same shape as TUNING_BASELINE's categories, but only holding entries that currently
-// differ from baseline -- each leaf is { old, new }. This IS the diff the export patch
-// and changelog are built from, kept up to date incrementally as edits land rather than
-// recomputed by diffing baseline against live state (simpler once trinket per-stack
-// effects and boss patterns are involved).
-let tuningEdits = { cards: {}, bosses: {}, trinkets: {}, constants: {} };
-
-// A card key can live in up to five different zones at once (the run deck, hand, draw
-// pile, discard pile, exhaust pile) plus the market's current offers -- instantiateCard
-// and openMarket/rerollShop/growCardOffersToShopSize all spread CARD_LIBRARY into a new
-// object per instance, so editing the library alone leaves every existing instance on
-// its old value. This patches all of them in place so an edit is visible immediately on
-// cards already drawn, in the shop, or sitting in a pile -- not just future ones.
-function patchCardInstancesEverywhere(key, field, value) {
-  const zones = [];
-  if (game) {
-    zones.push(game.deck);
-    if (game.combat) zones.push(game.combat.hand, game.combat.drawPile, game.combat.discardPile, game.combat.exhaustPile);
-  }
-  if (marketState) zones.push(marketState.cardOffers);
-  for (const zone of zones) {
-    if (!zone) continue;
-    for (const inst of zone) {
-      if (inst.key === key) inst[field] = value;
-    }
-  }
+// (Browser-only -- see the __inBrowser note above.)
+if (__inBrowser) {
+  document.getElementById('btn-new-run').onclick = newRun;
+  document.getElementById('btn-end-turn').onclick = endTurn;
+  document.getElementById('btn-continue').onclick = continueFromMarket;
+  document.getElementById('btn-reroll').onclick = rerollShop;
+  document.getElementById('btn-heal').onclick = doHeal;
+  document.getElementById('btn-remove').onclick = openRemoveScreen;
+  document.getElementById('btn-upgrade').onclick = openUpgradeScreen;
+  document.getElementById('btn-cancel-remove').onclick = () => { showScreen('screen-market'); renderMarket(); };
+  document.getElementById('btn-cancel-upgrade').onclick = () => { showScreen('screen-market'); renderMarket(); };
+  document.getElementById('btn-restart-lose').onclick = newRun;
+  document.getElementById('btn-restart-win').onclick = newRun;
 }
 
-// Re-renders whichever screens are currently backed by live state, so an edit shows up
-// immediately regardless of which screen is open behind the panel. Each render function
-// already guards its own preconditions (renderCombat no-ops with no combat, etc.).
-function refreshVisibleScreens() {
-  if (game && game.combat) renderCombat();
-  if (marketState) renderMarket();
-  if (game) renderRemoveScreen();
-}
+if (__inBrowser) showScreen('screen-start');
 
-function setInputEdited(el, edited) {
-  if (el) el.classList.toggle('tuning-edited', edited);
-}
-
-function onTuningCardFieldChange(key, field, rawValue, el) {
-  const value = Number(rawValue);
-  if (!Number.isFinite(value)) return;
-  CARD_LIBRARY[key][field] = value;
-  patchCardInstancesEverywhere(key, field, value);
-  const baseline = TUNING_BASELINE.cards[key][field];
-  const bucket = (tuningEdits.cards[key] ||= {});
-  if (value === baseline) {
-    delete bucket[field];
-    if (!Object.keys(bucket).length) delete tuningEdits.cards[key];
-    setInputEdited(el, false);
-  } else {
-    bucket[field] = { old: baseline, new: value };
-    setInputEdited(el, true);
-  }
-  refreshVisibleScreens();
-}
-
-function onTuningBossMaxHpChange(idx, rawValue, el) {
-  const value = Number(rawValue);
-  if (!Number.isFinite(value)) return;
-  BOSSES[idx].maxHp = value;
-  // If this boss is the one currently being fought, update the active fight's HP-bar
-  // denominator too. Current HP is deliberately left alone rather than guessing whether
-  // it should rescale -- see the report on this feature for the reasoning.
-  if (game && game.combat && game.bossIndex === idx) game.combat.bosses[0].maxHp = value;
-  const baseline = TUNING_BASELINE.bosses[idx].maxHp;
-  const bucket = (tuningEdits.bosses[idx] ||= {});
-  if (value === baseline) {
-    delete bucket.maxHp;
-    if (!Object.keys(bucket).length) delete tuningEdits.bosses[idx];
-    setInputEdited(el, false);
-  } else {
-    bucket.maxHp = { old: baseline, new: value };
-    setInputEdited(el, true);
-  }
-  refreshVisibleScreens();
-}
-
-function onTuningBossPatternChange(idx, rawValue, el) {
-  const values = rawValue.split(',').map(s => s.trim()).filter(s => s.length).map(Number);
-  if (!values.length || values.some(v => !Number.isFinite(v))) return; // leave invalid input un-applied
-  const boss = BOSSES[idx];
-  // Mutate the array's CONTENTS in place rather than reassigning `boss.pattern` -- an
-  // in-progress fight against this same boss holds the identical array by reference
-  // (see startCombat), so splicing it updates that fight's pattern immediately instead
-  // of only affecting the next time this boss is encountered.
-  boss.pattern.splice(0, boss.pattern.length, ...values);
-  if (game && game.combat && game.bossIndex === idx) {
-    game.combat.bosses[0].patternIndex = game.combat.bosses[0].patternIndex % boss.pattern.length;
-  }
-  const baseline = TUNING_BASELINE.bosses[idx].pattern;
-  const same = baseline.length === values.length && baseline.every((v, i) => v === values[i]);
-  const bucket = (tuningEdits.bosses[idx] ||= {});
-  if (same) {
-    delete bucket.pattern;
-    if (!Object.keys(bucket).length) delete tuningEdits.bosses[idx];
-    setInputEdited(el, false);
-  } else {
-    bucket.pattern = { old: baseline.slice(), new: values.slice() };
-    setInputEdited(el, true);
-  }
-  refreshVisibleScreens();
-}
-
-function onTuningTrinketFieldChange(key, field, rawValue, el) {
-  const value = Number(rawValue);
-  if (!Number.isFinite(value)) return;
-  TRINKET_LIBRARY[key][field] = value;
-  const baseline = TUNING_BASELINE.trinkets[key][field];
-  const bucket = (tuningEdits.trinkets[key] ||= {});
-  if (value === baseline) {
-    delete bucket[field];
-    if (!Object.keys(bucket).length) delete tuningEdits.trinkets[key];
-    setInputEdited(el, false);
-  } else {
-    bucket[field] = { old: baseline, new: value };
-    setInputEdited(el, true);
-  }
-  refreshVisibleScreens();
-}
-
-function onTuningConstantChange(name, rawValue, el) {
-  const value = Number(rawValue);
-  if (!Number.isFinite(value)) return;
-  TUNING_CONST_ACCESSORS[name].set(value);
-  const baseline = TUNING_BASELINE.constants[name];
-  if (value === baseline) {
-    delete tuningEdits.constants[name];
-    setInputEdited(el, false);
-  } else {
-    tuningEdits.constants[name] = { old: baseline, new: value };
-    setInputEdited(el, true);
-  }
-  refreshVisibleScreens();
-}
-
-function isCardFieldEdited(key, field) { return !!(tuningEdits.cards[key] && field in tuningEdits.cards[key]); }
-function isBossFieldEdited(idx, field) { return !!(tuningEdits.bosses[idx] && field in tuningEdits.bosses[idx]); }
-function isTrinketFieldEdited(key, field) { return !!(tuningEdits.trinkets[key] && field in tuningEdits.trinkets[key]); }
-function isConstantEdited(name) { return name in tuningEdits.constants; }
-
-function tuningNumberInput(kind, attrs, value, edited, extraClass) {
-  const dataAttrs = Object.entries(attrs).map(([k, v]) => `data-${k}="${v}"`).join(' ');
-  return `<input type="number" step="any" class="${extraClass || ''}${edited ? ' tuning-edited' : ''}" data-kind="${kind}" ${dataAttrs} value="${value}">`;
-}
-
-function buildTuningConstantsSection() {
-  const rows = TUNING_CONST_NAMES.map(name => `
-    <div class="tuning-row">
-      <div class="tuning-name">${name}</div>
-      <span class="tuning-field">
-        ${tuningNumberInput('const', { name }, TUNING_CONST_ACCESSORS[name].get(), isConstantEdited(name))}
-      </span>
-    </div>
-  `).join('');
-  return `<div class="tuning-section"><h3>Run Constants</h3>${rows}</div>`;
-}
-
-function buildTuningBossesSection() {
-  const rows = BOSSES.map((boss, i) => `
-    <div class="tuning-row">
-      <div class="tuning-name">${boss.name}<span class="tuning-key">boss ${i}</span></div>
-      <span class="tuning-field">
-        <label>maxHp</label>
-        ${tuningNumberInput('boss-maxhp', { idx: i }, boss.maxHp, isBossFieldEdited(i, 'maxHp'))}
-      </span>
-      <span class="tuning-field">
-        <label>pattern</label>
-        <input type="text" class="tuning-pattern${isBossFieldEdited(i, 'pattern') ? ' tuning-edited' : ''}" data-kind="boss-pattern" data-idx="${i}" value="${boss.pattern.join(', ')}">
-      </span>
-    </div>
-  `).join('');
-  return `<div class="tuning-section"><h3>Bosses</h3>${rows}</div>`;
-}
-
-function buildTuningTrinketsSection() {
-  const rows = Object.values(TRINKET_LIBRARY).map(t => `
-    <div class="tuning-row">
-      <div class="tuning-name">${t.name}<span class="tuning-key">${t.key}</span></div>
-      <span class="tuning-field">
-        <label>price</label>
-        ${tuningNumberInput('trinket', { key: t.key, field: 'price' }, t.price, isTrinketFieldEdited(t.key, 'price'))}
-      </span>
-      <span class="tuning-field">
-        <label>effect</label>
-        ${tuningNumberInput('trinket', { key: t.key, field: 'effectAmount' }, t.effectAmount, isTrinketFieldEdited(t.key, 'effectAmount'))}
-      </span>
-    </div>
-  `).join('');
-  return `<div class="tuning-section"><h3>Trinkets</h3>${rows}</div>`;
-}
-
-function buildTuningCardsSection() {
-  const groups = [
-    ['ATTACK', 'attack'], ['BLOCK', 'block'], ['LOOT', 'loot'], ['SKILL', 'skill'],
-  ];
-  const body = groups.map(([label, type]) => {
-    const cards = Object.values(CARD_LIBRARY).filter(c => c.type === type);
-    const rows = cards.map(card => {
-      const fields = TUNING_CARD_NUMERIC_FIELDS.filter(f => card[f] !== undefined).map(f => `
-        <span class="tuning-field">
-          <label>${f}</label>
-          ${tuningNumberInput('card', { key: card.key, field: f }, card[f], isCardFieldEdited(card.key, f))}
-        </span>
-      `).join('');
-      return `
-        <div class="tuning-row">
-          <div class="tuning-name">${card.name}<span class="tuning-key">${card.key}</span></div>
-          ${fields}
-        </div>
-      `;
-    }).join('');
-    return `<div class="tuning-group-label">${label}</div>${rows}`;
-  }).join('');
-  return `<div class="tuning-section"><h3>Cards</h3>${body}</div>`;
-}
-
-function renderTuningBody() {
-  document.getElementById('tuning-body').innerHTML =
-    buildTuningConstantsSection() + buildTuningBossesSection() + buildTuningTrinketsSection() + buildTuningCardsSection();
-}
-
-function openTuningPanel() {
-  renderTuningBody();
-  document.getElementById('tuning-panel').classList.remove('hidden');
-}
-
-function closeTuningPanel() {
-  document.getElementById('tuning-panel').classList.add('hidden');
-}
-
-function toggleTuningPanel() {
-  const panel = document.getElementById('tuning-panel');
-  if (panel.classList.contains('hidden')) openTuningPanel();
-  else closeTuningPanel();
-}
-
-// One delegated listener for every input in the panel, rather than one per input --
-// dispatches on data-kind. Uses 'input' (not 'change') so number-field arrow-clicks and
-// typing both apply live without needing to blur the field first.
-document.getElementById('tuning-body').addEventListener('input', (e) => {
-  const el = e.target;
-  const kind = el.dataset.kind;
-  if (!kind) return;
-  if (kind === 'card') onTuningCardFieldChange(el.dataset.key, el.dataset.field, el.value, el);
-  else if (kind === 'boss-maxhp') onTuningBossMaxHpChange(Number(el.dataset.idx), el.value, el);
-  else if (kind === 'boss-pattern') onTuningBossPatternChange(Number(el.dataset.idx), el.value, el);
-  else if (kind === 'trinket') onTuningTrinketFieldChange(el.dataset.key, el.dataset.field, el.value, el);
-  else if (kind === 'const') onTuningConstantChange(el.dataset.name, el.value, el);
-});
-
-// Builds the same { <cardKey>: {...}, bosses: {...}, trinkets: {...}, constants: {...} }
-// shape applyTuningPatch() reads, from only the entries in tuningEdits, plus a plain-text
-// changelog line per changed field. Never touches onPlay -- tuningEdits only ever holds
-// plain numeric/array diffs, so there is nothing function-shaped to lose in the round trip.
-function buildTuningPatchAndChangelog() {
-  const patch = {};
-  const changelog = [];
-
-  for (const [key, fields] of Object.entries(tuningEdits.cards)) {
-    if (!Object.keys(fields).length) continue;
-    patch[key] = {};
-    for (const [field, { old, new: nv }] of Object.entries(fields)) {
-      patch[key][field] = nv;
-      changelog.push(`${key}.${field}: ${old} → ${nv}`);
-    }
-  }
-
-  const bossPatch = {};
-  for (const [idx, fields] of Object.entries(tuningEdits.bosses)) {
-    if (!Object.keys(fields).length) continue;
-    bossPatch[idx] = {};
-    for (const [field, { old, new: nv }] of Object.entries(fields)) {
-      bossPatch[idx][field] = Array.isArray(nv) ? nv.slice() : nv;
-      const fmt = (v) => Array.isArray(v) ? `[${v.join(', ')}]` : v;
-      changelog.push(`bosses[${idx}].${field}: ${fmt(old)} → ${fmt(nv)}`);
-    }
-  }
-  if (Object.keys(bossPatch).length) patch.bosses = bossPatch;
-
-  const trinketPatch = {};
-  for (const [key, fields] of Object.entries(tuningEdits.trinkets)) {
-    if (!Object.keys(fields).length) continue;
-    trinketPatch[key] = {};
-    for (const [field, { old, new: nv }] of Object.entries(fields)) {
-      trinketPatch[key][field] = nv;
-      changelog.push(`trinkets.${key}.${field}: ${old} → ${nv}`);
-    }
-  }
-  if (Object.keys(trinketPatch).length) patch.trinkets = trinketPatch;
-
-  const constPatch = {};
-  for (const [name, { old, new: nv }] of Object.entries(tuningEdits.constants)) {
-    constPatch[name] = nv;
-    changelog.push(`constants.${name}: ${old} → ${nv}`);
-  }
-  if (Object.keys(constPatch).length) patch.constants = constPatch;
-
-  return { patch, changelog: changelog.join('\n') };
-}
-
-async function exportTuningPatch() {
-  const { patch, changelog } = buildTuningPatchAndChangelog();
-  const text = `const TUNING = ${JSON.stringify(patch, null, 2)};\n\n// Changelog:\n${changelog || '(no changes)'}`;
-  try {
-    await navigator.clipboard.writeText(text);
-    logTuningStatus(Object.keys(patch).length ? 'Patch + changelog copied to clipboard.' : 'Nothing changed -- copied an empty patch.');
-  } catch (e) {
-    logTuningStatus('Clipboard unavailable -- patch logged to the console instead.');
-    console.log(text);
-  }
-}
-
-function logTuningStatus(msg) {
-  let el = document.querySelector('.tuning-status');
-  if (!el) {
-    el = document.createElement('span');
-    el.className = 'tuning-status';
-    el.style.marginLeft = '10px';
-    el.style.fontSize = '0.75rem';
-    el.style.opacity = '0.75';
-    document.querySelector('.tuning-header').appendChild(el);
-  }
-  el.textContent = msg;
-}
-
-// Restores every card, boss, trinket, and constant to TUNING_BASELINE (the file's values,
-// plus any baked-in TUNING patch) and clears all tracked edits. Does not touch onPlay or
-// anything else the panel never edited in the first place.
-function resetTuningPanel() {
-  for (const [key, fields] of Object.entries(TUNING_BASELINE.cards)) {
-    for (const [field, value] of Object.entries(fields)) {
-      CARD_LIBRARY[key][field] = value;
-      patchCardInstancesEverywhere(key, field, value);
-    }
-  }
-  BOSSES.forEach((boss, i) => {
-    const base = TUNING_BASELINE.bosses[i];
-    boss.maxHp = base.maxHp;
-    boss.pattern.splice(0, boss.pattern.length, ...base.pattern);
-    if (game && game.combat && game.bossIndex === i) {
-      game.combat.bosses[0].maxHp = base.maxHp;
-      game.combat.bosses[0].patternIndex = game.combat.bosses[0].patternIndex % boss.pattern.length;
-    }
-  });
-  for (const [key, fields] of Object.entries(TUNING_BASELINE.trinkets)) {
-    Object.assign(TRINKET_LIBRARY[key], fields);
-  }
-  for (const name of TUNING_CONST_NAMES) {
-    TUNING_CONST_ACCESSORS[name].set(TUNING_BASELINE.constants[name]);
-  }
-  tuningEdits = { cards: {}, bosses: {}, trinkets: {}, constants: {} };
-  renderTuningBody();
-  refreshVisibleScreens();
-  logTuningStatus('Reset to file values.');
-}
-
-document.getElementById('btn-tuning-close').onclick = closeTuningPanel;
-document.getElementById('btn-tuning-export').onclick = exportTuningPatch;
-document.getElementById('btn-tuning-reset').onclick = resetTuningPanel;
-
-// Backtick toggles the panel from anywhere (start screen, combat, market, ...) -- a
-// separate listener from the existing combat hotkeys (Space / 1-9 / 0) further up this
-// file, which stay scoped to screen-combat. Backtick was unbound before this.
-//
-// Tests e.code, not e.key: on a Norwegian (and several other non-US) keyboard layout,
-// the physical key left of "1" is a dead key for accent composition, so keydown fires
-// with e.key === 'Dead' rather than a backtick character -- e.key would make this
-// unreachable on those layouts. e.code identifies the physical key position
-// ('Backquote') regardless of layout or dead-key behavior, so this works the same on
-// every keyboard. Guarded against Ctrl/Alt/Meta so an OS- or browser-level shortcut on
-// that same physical key doesn't also pop the panel open.
-document.addEventListener('keydown', (e) => {
-  if (e.code !== 'Backquote') return;
-  if (e.ctrlKey || e.altKey || e.metaKey) return;
-  e.preventDefault();
-  toggleTuningPanel();
-});
